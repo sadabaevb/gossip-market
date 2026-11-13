@@ -1,0 +1,24 @@
+# What the local devnet starts with: `gossipmarket devnet` (see docs/DEMO.md).
+# Three agents, each holding the one token the next of them wants.
+
+verifier = "intents.devnet"
+# One pip is a millionth. This is what intents.near took on 12 November 2026; nodes read the
+# real one from the contract.
+fee_pips = 1
+
+[tokens]
+USDC = { id = "nep141:usdc.devnet", decimals = 6 }
+CREDITS = { id = "nep141:credits.devnet", decimals = 3 }
+DATA = { id = "nep141:data.devnet", decimals = 3 }
+
+[[account]]
+key = "devnet:alice"
+balances = ["50 USDC"]
+
+[[account]]
+key = "devnet:bob"
+balances = ["500 CREDITS"]
+
+[[account]]
+key = "devnet:carol"
+balances = ["20 DATA"]

@@ -1,0 +1,28 @@
+[workspace]
+resolver = "2"
+members = ["intents", "chain", "market", "node", "conformance"]
+# `conformance` replays our bundles through the real verifier engine, which it fetches from
+# github.com/near/intents and builds: `cargo test -p conformance`. Everything else builds offline
+# once the crates are downloaded.
+default-members = ["intents", "chain", "market", "node"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/dastansam/gossipmarket"
+
+[workspace.dependencies]
+intents = { path = "intents" }
+chain = { path = "chain" }
+market = { path = "market" }
+
+base64 = "0.22"
+bs58 = "0.5"
+ed25519-dalek = "2"
+hex = "0.4"
+rand = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "sync", "time", "io-util", "io-std", "signal"] }

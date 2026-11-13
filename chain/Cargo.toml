@@ -1,0 +1,20 @@
+[package]
+name = "chain"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Gossip Market: the verifier over NEAR JSON-RPC, and a local devnet that answers the same calls"
+
+[dependencies]
+intents.workspace = true
+base64.workspace = true
+bs58.workspace = true
+hex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tokio.workspace = true
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+regex = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }

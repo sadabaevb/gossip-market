@@ -1,0 +1,6 @@
+/target
+# Agents' keys. Each file is a whole account.
+/keys/
+*.key
+.env
+.DS_Store

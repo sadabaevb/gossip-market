@@ -1,0 +1,15 @@
+[package]
+name = "conformance"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Gossip Market: our bundles, run through the verifier's own engine"
+
+[dev-dependencies]
+intents.workspace = true
+market.workspace = true
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+serde_json.workspace = true
+# The verifier's engine as deployed logic, pinned to the commit read while writing `intents::ledger`.
+defuse-core = { git = "https://github.com/near/intents", rev = "fce0936b1699e0591204ce152a78afc1c1338b35" }

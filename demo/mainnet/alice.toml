@@ -1,0 +1,26 @@
+# One agent of the mainnet demo: real accounts, real tokens, cents at stake. Follow docs/DEMO.md:
+# make the key, run `gossipmarket preflight`, fund the account, and only then start the node.
+
+name = "alice"
+# Written by `gossipmarket keygen --out keys/alice.key`. The path is read from where the node is
+# started. `keys/` is in .gitignore: the file is the whole account.
+key = "file:keys/alice.key"
+listen = "/ip4/0.0.0.0/tcp/4101"
+# The first node dials nobody. The others are given its address; any node would do.
+bootstrap = []
+mdns = true
+
+# Any NEAR mainnet JSON-RPC endpoint.
+rpc = "https://free.rpc.fastnear.com"
+verifier = "intents.near"
+
+[tokens]
+USDC = { id = "nep141:17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1", decimals = 6 }
+USDT = { id = "nep141:usdt.tether-token.near", decimals = 6 }
+NEAR = { id = "nep141:wrap.near", decimals = 24 }
+
+# Amounts small enough to lose. The prices are placeholders, not the market's: the three wants
+# close into a ring because each maker asks for less than the next one gives.
+[[want]]
+give = "0.10 USDC"
+take = "0.02 NEAR"

@@ -1,0 +1,21 @@
+# One agent of the devnet demo: `gossipmarket node --config demo/bob.toml` (see docs/DEMO.md).
+
+name = "bob"
+# A throwaway key derived from the name. It works only against a devnet on localhost.
+key = "devnet:bob"
+listen = "/ip4/0.0.0.0/tcp/4002"
+bootstrap = ["/ip4/127.0.0.1/tcp/4001"]
+mdns = true
+
+rpc = "http://127.0.0.1:3030"
+verifier = "intents.devnet"
+
+[tokens]
+USDC = { id = "nep141:usdc.devnet", decimals = 6 }
+CREDITS = { id = "nep141:credits.devnet", decimals = 3 }
+DATA = { id = "nep141:data.devnet", decimals = 3 }
+
+# Opened at start. More can be typed into the running node: want 5 DATA for 40 CREDITS
+[[want]]
+give = "100 CREDITS"
+take = "4.9 DATA"
