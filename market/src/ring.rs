@@ -164,6 +164,12 @@ impl Ring {
     }
 }
 
+/// Shortest first, then by id. Written once: `first_rings_of` compares rings by the order `search`
+/// lists them in, and makers who ordered rings differently would each propose a different one.
+fn order(ring: &Ring) -> (usize, String) {
+    (ring.legs.len(), ring.id())
+}
+
 /// Every ring the open wants allow at this fee, sized as large as the wants permit. Shortest
 /// first, then by id: every node lists them in the same order.
 pub fn find_rings<'a>(wants: impl IntoIterator<Item = &'a Want>, fee_pips: u32) -> Vec<Ring> {
@@ -202,7 +208,6 @@ pub fn first_rings_of<'a>(
     passed_over: impl Fn(&Ring) -> bool,
 ) -> Vec<Ring> {
     let index = Index::new(wants);
-    let key = |ring: &Ring| (ring.legs.len(), ring.id());
     // By (position, longest ring), the first ring found from that want: rings of the maker's that
     // share a counterparty's want ask the same question of it.
     let mut first_from: BTreeMap<(usize, usize), Option<(usize, String)>> = BTreeMap::new();
@@ -230,16 +235,16 @@ pub fn first_rings_of<'a>(
                     rings
                         .into_iter()
                         .find(|other| !passed_over(other))
-                        .map(|other| key(&other))
+                        .map(|other| order(&other))
                 })
                 .as_ref()
-                .is_none_or(|other| *other >= key(&ring))
+                .is_none_or(|other| *other >= order(&ring))
         });
         if first_everywhere {
             first.push(ring);
         }
     }
-    first.sort_by_cached_key(key);
+    first.sort_by_cached_key(order);
     first
 }
 
@@ -334,7 +339,7 @@ impl<'a> Index<'a> {
                 });
             }
         }
-        rings.sort_by_cached_key(|ring: &Ring| (ring.legs.len(), ring.id()));
+        rings.sort_by_cached_key(order);
         rings.truncate(MAX_RINGS);
         rings
     }

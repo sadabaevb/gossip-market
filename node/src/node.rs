@@ -633,10 +633,10 @@ impl Node {
 
         let possible: BTreeSet<_> = rings.iter().map(Ring::wants).collect();
         self.first_seen.retain(|wants, _| possible.contains(wants));
-        self.fell_through
-            .retain(|_, (at, _)| now.duration_since(*at) < self.timings.retry_after * 4);
-        self.tried
-            .retain(|_, until| now.duration_since(*until) < self.timings.retry_after * 4);
+        // One horizon for both: they hold a ring back through the same rest below.
+        let forget = self.timings.retry_after * 4;
+        self.fell_through.retain(|_, (at, _)| now.duration_since(*at) < forget);
+        self.tried.retain(|_, until| now.duration_since(*until) < forget);
 
         for ring in rings {
             let Some(leg) = ring.leg_of(&self.me) else { continue };

@@ -381,6 +381,22 @@ fn median(mut values: Vec<usize>) -> usize {
     values.get(values.len() / 2).copied().unwrap_or(0)
 }
 
+/// A want as the ring search is asked about it here: what could still settle, not what a peer
+/// announced, so it never expires and has no addresses.
+fn open_want(maker: AccountId, id: u64, rev: u64, give: (TokenId, u128), take: (TokenId, u128)) -> Want {
+    Want {
+        maker,
+        id,
+        rev,
+        give: give.0,
+        give_amount: give.1,
+        take: take.0,
+        take_amount: take.1,
+        expires_ms: u64::MAX,
+        addrs: Vec::new(),
+    }
+}
+
 /// A planted ring that cannot close leaves less to settle than the plan says. If none could, the
 /// market would clear with nothing traded, and the checks at the end would pass on an empty market.
 fn every_planted_ring_closes(plans: &[Plan], planted: &Planted, account: impl Fn(usize) -> AccountId) -> Result<()> {
@@ -389,17 +405,13 @@ fn every_planted_ring_closes(plans: &[Plan], planted: &Planted, account: impl Fn
             .iter()
             .map(|&(i, w)| {
                 let (give, give_amount, take, take_amount) = plans[i].wants[w];
-                Want {
-                    maker: account(i),
-                    id: w as u64,
-                    rev: 0,
-                    give: token_id(give),
-                    give_amount,
-                    take: token_id(take),
-                    take_amount,
-                    expires_ms: u64::MAX,
-                    addrs: Vec::new(),
-                }
+                open_want(
+                    account(i),
+                    w as u64,
+                    0,
+                    (token_id(give), give_amount),
+                    (token_id(take), take_amount),
+                )
             })
             .collect();
         ensure!(
@@ -540,7 +552,7 @@ pub async fn run(n: usize, seed: u64) -> Result<()> {
                 println!(
                     "[{:6.1}s] refused: tx {}… from {}: {failure}",
                     now.as_secs_f64(),
-                    &sent.hash[..8],
+                    node::short(&sent.hash),
                     who(&sent.signer)
                 );
                 refused.push((sent.hash, failure));
@@ -563,7 +575,7 @@ pub async fn run(n: usize, seed: u64) -> Result<()> {
                 settled.len() + 1,
                 checked.legs.len(),
                 legs.join(" -> "),
-                &sent.hash[..8],
+                node::short(&sent.hash),
                 who(&sent.signer)
             );
             settled.push(Settled {
@@ -584,17 +596,13 @@ pub async fn run(n: usize, seed: u64) -> Result<()> {
             for want in &agent.handle.view.borrow().wants {
                 locked += usize::from(want.locked.is_some());
                 if want.closed.is_none() && want.remaining > 0 && want.locked.is_none() {
-                    open.push(Want {
-                        maker: agent.account.clone(),
-                        id: want.id,
-                        rev: want.rev,
-                        give: want.give.clone(),
-                        give_amount: want.remaining,
-                        take: want.take.clone(),
-                        take_amount: want.take_for_remaining,
-                        expires_ms: u64::MAX,
-                        addrs: Vec::new(),
-                    });
+                    open.push(open_want(
+                        agent.account.clone(),
+                        want.id,
+                        want.rev,
+                        (want.give.clone(), want.remaining),
+                        (want.take.clone(), want.take_for_remaining),
+                    ));
                 }
             }
         }
