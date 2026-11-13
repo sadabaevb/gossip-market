@@ -10,7 +10,7 @@ default-members = ["intents", "chain", "market", "node"]
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-repository = "https://github.com/dastansam/gossipmarket"
+repository = "https://github.com/sadabaevb/gossip-market"
 
 [workspace.dependencies]
 intents = { path = "intents" }
