@@ -60,6 +60,9 @@ pub enum Conduct {
     /// Proposes, collects, shares the bundle with the makers, and never submits it.
     #[cfg(test)]
     SharesButNeverSubmits,
+    /// The same, and keeps telling everyone the ring has settled.
+    #[cfg(test)]
+    SharesAndClaimsItSettled,
     /// Proposes the rings it is not in to their makers, over and over.
     #[cfg(test)]
     ProposesOthersRings,
@@ -214,7 +217,10 @@ struct Node {
     settled_topic: gossipsub::IdentTopic,
     bootstrap: Vec<Multiaddr>,
     listen: Vec<Multiaddr>,
-    peers: BTreeSet<PeerId>,
+    /// The connected peers, each with the name the view shows for it. Worked out once, on
+    /// connecting: getting an account out of a peer id decodes its key, and doing that for every
+    /// peer on every change of the view was a third of the work of a node among a hundred.
+    peers: BTreeMap<PeerId, AccountId>,
 
     state: Option<VerifierState>,
     balances: BTreeMap<TokenId, u128>,
@@ -255,8 +261,32 @@ fn now_ms() -> u64 {
         .map_or(0, |d| d.as_millis() as u64)
 }
 
+/// What the chain's answer about a signed leg's nonce means for the leg.
+#[derive(Debug, PartialEq, Eq)]
+enum Outcome {
+    Settled,
+    /// Unspent, and the deadline is far enough behind that it will stay so.
+    Expired,
+    Pending,
+}
+
+/// `late` is how far past its deadline the leg is. An unspent nonce just past the deadline is not
+/// the last word: a transaction that beat the deadline can show a little after it. Given up at
+/// once, the want was reopened while that transaction could still land, and could be filled twice.
+fn outcome(used: bool, late: Duration, grace: Duration) -> Outcome {
+    match used {
+        true => Outcome::Settled,
+        false if late > grace => Outcome::Expired,
+        false => Outcome::Pending,
+    }
+}
+
+/// The first eight characters of a name, for a line of log. Cut at a character, not at a byte: the
+/// name comes from a peer, and one with a longer character across the eighth byte would panic the
+/// node that logged it.
 pub(crate) fn short(account: &str) -> &str {
-    &account[..account.len().min(8)]
+    let end = account.char_indices().nth(8).map_or(account.len(), |(at, _)| at);
+    &account[..end]
 }
 
 /// Starts a node and returns once it is listening.
@@ -306,7 +336,7 @@ pub async fn spawn_with(config: NodeConfig, timings: Timings, conduct: Conduct) 
         settled_topic,
         bootstrap,
         listen: Vec::new(),
-        peers: BTreeSet::new(),
+        peers: BTreeMap::new(),
         state: None,
         balances: BTreeMap::new(),
         refreshing: false,
@@ -353,7 +383,7 @@ impl Node {
         mut chain_rx: mpsc::UnboundedReceiver<ChainEvent>,
         view: watch::Sender<View>,
     ) {
-        let mut tick = tokio::time::interval(Duration::from_millis(200));
+        let mut tick = tokio::time::interval(self.tick_every());
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             tokio::select! {
@@ -369,6 +399,16 @@ impl Node {
                 view.send_replace(self.view());
             }
         }
+    }
+
+    /// How often the node looks at its clocks.
+    fn tick_every(&self) -> Duration {
+        // Its claims have to arrive faster than a maker can check them, or they hold nothing up.
+        #[cfg(test)]
+        if self.conduct == Conduct::SharesAndClaimsItSettled {
+            return Duration::from_millis(20);
+        }
+        Duration::from_millis(200)
     }
 
     fn say(&mut self, line: impl Into<String>) {
@@ -390,11 +430,7 @@ impl Node {
             verifier: self.chain.contract().to_owned(),
             rpc: self.rpc.clone(),
             fee_pips: self.state.map(|state| state.fee_pips),
-            peers: self
-                .peers
-                .iter()
-                .map(|peer| account_of(peer).unwrap_or_else(|| peer.to_string()))
-                .collect(),
+            peers: self.peers.values().cloned().collect(),
             balances: self
                 .balances
                 .iter()
@@ -879,7 +915,10 @@ impl Node {
 
     fn execute(&mut self, ring_id: String, bundle: Vec<SignedIntent>) {
         #[cfg(test)]
-        if self.conduct == Conduct::SharesButNeverSubmits {
+        if matches!(
+            self.conduct,
+            Conduct::SharesButNeverSubmits | Conduct::SharesAndClaimsItSettled
+        ) {
             if let Some(committed) = self.committed.get_mut(&ring_id) {
                 committed.busy = false;
             }
@@ -898,6 +937,10 @@ impl Node {
             return;
         };
         committed.busy = false;
+        // One try at sending it, and this was it: from here the nonce is watched. Spent only now
+        // that a transaction went out. Spent before the look at the chain that comes first, the
+        // try was lost whenever that look failed, with nothing sent.
+        committed.submit_at = None;
         match result {
             Ok(tx) => {
                 let notice = Notice {
@@ -1042,9 +1085,10 @@ impl Node {
     fn on_notice(&mut self, notice: Notice) {
         let ring_id = notice.ring.id();
         if let Some(committed) = self.committed.get_mut(&ring_id) {
-            // Told, not shown: this node's own nonce on chain is what it goes by.
+            // Told, not shown: this node's own nonce on chain is what it goes by. It looks when
+            // it next would have, not at once, or a peer could have it asking the verifier as
+            // fast as the peer sent notices.
             committed.told = Some((notice.tx, notice.submitter));
-            committed.recheck_at = Instant::now();
             return;
         }
         let known = self.settlements.iter().any(|settled| settled.ring.id() == ring_id);
@@ -1086,8 +1130,9 @@ impl Node {
             }
             committed.busy = true;
             committed.recheck_at = now + Duration::from_secs(1);
-            if overdue && !expired && !told {
-                committed.submit_at = None; // one try; after that the nonce is watched
+            // Whatever a notice said: the submit below asks the chain first, and a notice that
+            // could hold it off would let anyone keep a ring from settling by saying it had.
+            if overdue && !expired {
                 submit.push((
                     ring_id.clone(),
                     committed.nonce,
@@ -1128,15 +1173,16 @@ impl Node {
             return;
         };
         committed.busy = false;
-        match used {
-            Ok(true) => {
+        // How far past its deadline the leg is; nothing before it.
+        let late = (Utc::now() - committed.deadline).to_std().unwrap_or_default();
+        match used.map(|used| outcome(used, late, self.timings.settle_grace)) {
+            Ok(Outcome::Settled) => {
                 let told = committed.told.clone();
                 self.resolve(&ring_id, true, told);
             }
-            // Not settled, and it no longer can be.
-            Ok(false) if Utc::now() > committed.deadline => self.resolve(&ring_id, false, None),
+            Ok(Outcome::Expired) => self.resolve(&ring_id, false, None),
             // Not settled yet. A notice that proved wrong is forgotten.
-            Ok(false) => committed.told = None,
+            Ok(Outcome::Pending) => committed.told = None,
             Err(_) => committed.recheck_at = Instant::now() + Duration::from_secs(3),
         }
     }
@@ -1277,8 +1323,32 @@ impl Node {
         for ring_id in late {
             self.abandon(&ring_id, "not every maker answered in time", true);
         }
+        #[cfg(test)]
+        if self.conduct == Conduct::SharesAndClaimsItSettled {
+            self.claim_settled();
+        }
         self.follow_up();
         self.consider_rings();
+    }
+
+    /// Says of every ring this node shared the bundle of that it has settled, in a transaction
+    /// that does not exist.
+    #[cfg(test)]
+    fn claim_settled(&mut self) {
+        for committed in self.committed.values().filter(|committed| committed.shared) {
+            let notice = Notice {
+                ring: committed.ring.clone(),
+                // A new one each time, so that gossip does not drop it as already heard.
+                tx: format!("never-sent-{}", now_ms()),
+                submitter: self.me.clone(),
+            };
+            let message = serde_json::to_vec(&notice).expect("a notice is plain JSON");
+            let _ = self
+                .swarm
+                .behaviour_mut()
+                .gossipsub
+                .publish(self.settled_topic.clone(), message);
+        }
     }
 
     // ----- the network -----
@@ -1296,12 +1366,15 @@ impl Node {
                 self.listen.push(address);
             }
             SwarmEvent::ConnectionEstablished { peer_id, .. } => {
-                if self.peers.insert(peer_id) {
+                if !self.peers.contains_key(&peer_id) {
                     let who = account_of(&peer_id).unwrap_or_else(|| peer_id.to_string());
                     self.say(format!("connected to {}", short(&who)));
-                    // One walk of the DHT, on joining, finds the peers beyond the first. One per
-                    // connection was a walk for every peer each node met: with a hundred nodes,
-                    // most of their work went on that.
+                    self.peers.insert(peer_id, who);
+                    // Asked for once, not per connection: a walk of the DHT for every peer each
+                    // node met was most of the work of a hundred nodes. This one starts only if
+                    // the routing table already holds a peer, as when mDNS found one. Otherwise
+                    // libp2p-kad starts its own once a peer enters the table, and that walk is
+                    // what finds the peers beyond the first.
                     if self.peers.len() == 1 {
                         let _ = self.swarm.behaviour_mut().kad.bootstrap();
                     }
@@ -1315,8 +1388,7 @@ impl Node {
                 num_established: 0,
                 ..
             } => {
-                if self.peers.remove(&peer_id) {
-                    let who = account_of(&peer_id).unwrap_or_else(|| peer_id.to_string());
+                if let Some(who) = self.peers.remove(&peer_id) {
                     self.say(format!("lost {}", short(&who)));
                 }
             }
@@ -1375,5 +1447,35 @@ impl Node {
         if peer != *self.swarm.local_peer_id() && !self.swarm.is_connected(&peer) && self.peers.len() < MAX_PEERS {
             let _ = self.swarm.dial(net::dial_peer(peer));
         }
+    }
+}
+
+#[cfg(test)]
+mod unit {
+    use std::time::Duration;
+
+    use super::{outcome, short, Outcome};
+
+    // The first unspent answer after a deadline is not the end of a leg. Taken as the end, a want
+    // was reopened while a transaction that beat the deadline could still show, and filled twice.
+    #[test]
+    fn an_unspent_leg_is_given_up_only_once_its_deadline_is_well_behind() {
+        let grace = Duration::from_secs(10);
+        let secs = Duration::from_secs;
+        assert_eq!(outcome(false, Duration::ZERO, grace), Outcome::Pending);
+        assert_eq!(outcome(false, secs(3), grace), Outcome::Pending);
+        assert_eq!(outcome(false, secs(10), grace), Outcome::Pending);
+        assert_eq!(outcome(false, secs(11), grace), Outcome::Expired);
+        assert_eq!(outcome(true, Duration::ZERO, grace), Outcome::Settled);
+        assert_eq!(outcome(true, secs(11), grace), Outcome::Settled);
+    }
+
+    // A maker's name reaches the log from whatever a peer gossiped. Cut at the eighth byte, a name
+    // with a longer character there panicked the node: one notice took it off the market.
+    #[test]
+    fn a_name_from_a_peer_is_shortened_at_a_character_not_a_byte() {
+        assert_eq!(short("abcdefgé and more"), "abcdefgé");
+        assert_eq!(short("ab"), "ab");
+        assert_eq!(short("6b19f425761ce66f"), "6b19f425");
     }
 }

@@ -86,8 +86,8 @@ the last gives to the first.
 ### Search
 
 Every node runs the same search over the open wants it holds, from its own wants
-(`market/src/ring.rs`, `rings_of` and `first_rings_of`): depth-first over wants that take what the previous one gives,
-closing with a want that takes what the last gives and gives what the first takes. Every maker of
+(`first_rings_of` in `market/src/ring.rs`): depth-first over wants that take what the previous one
+gives, closing with a want that takes what the last gives and gives what the first takes. Every maker of
 a ring therefore finds it. A ring is written starting from its smallest `(maker, id)`, so it has
 one spelling. Results are ordered shortest first, then by ring id, and at most 64 are kept. A node
 searches from each of its wants on its own, so that rings through one want that is in many do not
@@ -233,17 +233,21 @@ it, so its want is free at once.
 
 A maker that receives a bundle checks every leg in it. If no settlement is seen, the maker ranked
 `n` waits `(n + 1) × 6 s`, checks that its nonce is still unspent, and submits the bundle itself,
-once.
+once. A check that could not be made does not count as the try: the maker checks again three
+seconds later. A notice does not hold the submit off either, whatever it says.
 
 ### Learning the outcome
 
 The node that submitted goes by the result of its own transaction. For everyone else a notice is
-a hint and nothing more: a maker that signed a leg decides only by asking the verifier
-`is_nonce_used` for its own nonce:
+a hint and nothing more: it has the maker ask sooner, at most once a second. A maker that signed a
+leg decides only by asking the verifier `is_nonce_used` for its own nonce:
 
 - spent: the ring settled. The want is reduced by what was given, and closed if nothing is left;
-- unspent after the deadline: the signature can no longer be used. The want is open again;
-- unspent before the deadline: keep waiting.
+- unspent, and the deadline is more than 10 seconds behind: the signature can no longer be used.
+  The want is open again;
+- unspent otherwise: keep waiting. Just past the deadline is too soon to tell. The node's clock is
+  not the chain's, and what it reads is a block or two behind, so a transaction that beat the
+  deadline can show a little after it. A want reopened then could be filled a second time.
 
 ## 6. The verifier
 
@@ -275,6 +279,7 @@ Defaults, in `node/src/config.rs`:
 | Intent deadline | 30 s ahead; makers accept 2 to 60 s |
 | Submit stagger per rank | 6 s |
 | Rest after a ring falls through | 10 s |
+| Watch a signed leg past its deadline | 10 s |
 | Re-read fee, salt and balances | every 10 s |
 
 ## 8. What a misbehaving node can do
@@ -282,10 +287,10 @@ Defaults, in `node/src/config.rs`:
 | It | The cost to others |
 |---|---|
 | announces wants it cannot pay for | a refused dry run; the ring rests 10 s |
-| never answers a proposal | the proposer waits 8 s; makers that signed wait out the deadline, then reopen |
-| collects signatures and does nothing | wants locked until the deadline, at most 60 s |
+| never answers a proposal | the proposer waits 8 s; makers that signed wait out the deadline and 10 s more, then reopen |
+| collects signatures and does nothing | wants locked until 10 s past the deadline, about 70 s at most |
 | collects signatures and settles a different batch with one of them | that maker gets exactly what its leg says; the others' legs expire |
-| sends a false notice | nothing: makers go by their own nonce |
+| sends a false notice | a free look at the chain, at most one a second: makers go by their own nonce |
 | proposes a ring it is not in | nothing: the makers decline it and go on as before |
 | floods wants | bounded per maker and in total, not per network: there is no Sybil resistance |
 | listens | learns every want and price |

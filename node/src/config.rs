@@ -119,6 +119,10 @@ pub struct Timings {
     pub submit_stagger: Duration,
     /// How long a ring that fell through is left alone.
     pub retry_after: Duration,
+    /// How long past its deadline a signed leg is still watched before the want behind it is
+    /// reopened. A transaction that beat the deadline can show a little after it: this node's
+    /// clock is not the chain's, and what it reads of the chain is a block or two behind.
+    pub settle_grace: Duration,
     /// How often balances and the verifier's fee and salt are read again.
     pub refresh_chain: Duration,
 }
@@ -133,6 +137,7 @@ impl Default for Timings {
             intent_ttl: Duration::from_secs(30),
             submit_stagger: Duration::from_secs(6),
             retry_after: Duration::from_secs(10),
+            settle_grace: Duration::from_secs(10),
             refresh_chain: Duration::from_secs(10),
         }
     }
@@ -149,6 +154,7 @@ impl Timings {
             intent_ttl: Duration::from_secs(8),
             submit_stagger: Duration::from_secs(2),
             retry_after: Duration::from_secs(2),
+            settle_grace: Duration::from_secs(1),
             refresh_chain: Duration::from_secs(1),
         }
     }
@@ -186,7 +192,10 @@ fn read_seed(path: &Path) -> Result<Keypair> {
 
 fn is_local(rpc: &str) -> bool {
     let host = rpc.split_once("://").map_or(rpc, |(_, rest)| rest);
-    let host = host.split(['/', '?']).next().unwrap_or_default();
+    let host = host.split(['/', '?', '#']).next().unwrap_or_default();
+    // What comes before an `@` is a user name, not the host: `http://localhost:80@example.com`
+    // goes to example.com.
+    let host = host.rsplit_once('@').map_or(host, |(_, host)| host);
     let host = match host.strip_prefix('[') {
         Some(v6) => v6.split(']').next().unwrap_or_default(),
         None => host.rsplit_once(':').map_or(host, |(name, _port)| name),
@@ -465,6 +474,9 @@ mod tests {
             "https://free.rpc.fastnear.com",
             "http://127.0.0.1.evil.example:3030",
             "http://localhost.example",
+            "http://localhost:3030@evil.example/",
+            "http://127.0.0.1@evil.example:3030",
+            "http://evil.example#@localhost",
         ] {
             assert!(keypair("devnet:alice", remote).is_err(), "{remote}");
         }

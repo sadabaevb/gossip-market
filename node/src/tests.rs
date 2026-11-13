@@ -15,6 +15,8 @@ struct Market {
     devnet: Devnet,
     rpc: String,
     tokens: Tokens,
+    /// What every agent that joins from here on runs with.
+    timings: Timings,
     agents: Vec<(&'static str, Handle)>,
 }
 
@@ -32,6 +34,7 @@ impl Market {
             devnet,
             rpc,
             tokens,
+            timings: Timings::fast(),
             agents: Vec::new(),
         }
     }
@@ -59,7 +62,7 @@ impl Market {
                 .collect(),
             ..self.config(name)
         };
-        let handle = node::spawn_with(config, Timings::fast(), conduct).await.unwrap();
+        let handle = node::spawn_with(config, self.timings, conduct).await.unwrap();
         self.agents.push((name, handle));
     }
 
@@ -122,7 +125,13 @@ impl Market {
 /// Alice, Bob and Carol each hold what the next wants. Bob's account sorts first, so the ring is
 /// his to propose.
 async fn ring_of_three(bob: Conduct, carol: Conduct) -> Market {
+    ring_of_three_on(Timings::fast(), bob, carol).await
+}
+
+/// The same, with every agent on `timings`.
+async fn ring_of_three_on(timings: Timings, bob: Conduct, carol: Conduct) -> Market {
     let mut market = Market::open(&[("alice", "50 USDC"), ("bob", "500 CREDITS"), ("carol", "20 DATA")]).await;
+    market.timings = timings;
     market
         .join("alice", &[("10 USDC", "95 CREDITS")], Conduct::Honest)
         .await;
@@ -156,6 +165,66 @@ async fn a_maker_settles_the_ring_when_the_proposer_goes_quiet() {
     assert_eq!(
         (market.balance("carol", "DATA"), market.balance("carol", "USDC")),
         (15_000, 9_999_000)
+    );
+}
+
+// A notice is hearsay. One saying a ring settled must not keep a maker from settling it: whoever
+// said so every moment, the proposer that went quiet or anyone listening, held the ring until its
+// signatures expired.
+#[tokio::test]
+async fn a_false_notice_does_not_keep_a_maker_from_settling_the_ring() {
+    let market = ring_of_three(Conduct::SharesAndClaimsItSettled, Conduct::Honest).await;
+    market
+        .until("all three see the ring settled", 30, |m| {
+            ["alice", "bob", "carol"].iter().all(|name| m.settled(name) == 1)
+        })
+        .await;
+    let submitted = |name| market.log(name).contains("submitting it myself");
+    assert!(submitted("alice") || submitted("carol"));
+    // On the first try, not on a later one after the signatures had expired.
+    for name in ["alice", "carol"] {
+        assert!(!market.log(name).contains("expired unsettled"), "{}", market.log(name));
+    }
+    // Settled once, on chain, whatever was said: the balances are the ring's.
+    assert_eq!(market.devnet.transactions().len(), 1);
+    assert_eq!(
+        (market.balance("alice", "USDC"), market.balance("alice", "CREDITS")),
+        (40_000_000, 99_990)
+    );
+    assert_eq!(
+        (market.balance("carol", "DATA"), market.balance("carol", "USDC")),
+        (15_000, 9_999_000)
+    );
+}
+
+// A maker's one try at settling a ring itself begins with a free look at the chain. A look that
+// failed used to spend the try with nothing sent, and a ring whose proposer had gone quiet then
+// expired with every signature in its makers' hands.
+#[tokio::test]
+async fn a_maker_whose_look_at_the_chain_failed_tries_again() {
+    // A deadline far enough off for a second try: a maker looks again three seconds after a look
+    // that failed.
+    let timings = Timings {
+        intent_ttl: Duration::from_secs(20),
+        ..Timings::fast()
+    };
+    let market = ring_of_three_on(timings, Conduct::SharesButNeverSubmits, Conduct::Honest).await;
+    // Until a maker's turn to submit comes nobody asks about a nonce, so these two are the first
+    // look of each of the two makers who hold the bundle.
+    market.devnet.fail_next("is_nonce_used", 2);
+    market
+        .until("all three see the ring settled", 30, |m| {
+            ["alice", "bob", "carol"].iter().all(|name| m.settled(name) == 1)
+        })
+        .await;
+    // With the signatures of the first try, not with those of a second ring after they expired.
+    for name in ["alice", "carol"] {
+        assert!(!market.log(name).contains("expired unsettled"), "{}", market.log(name));
+    }
+    assert_eq!(market.devnet.transactions().len(), 1);
+    assert_eq!(
+        (market.balance("bob", "CREDITS"), market.balance("bob", "DATA")),
+        (400_000, 4_999)
     );
 }
 

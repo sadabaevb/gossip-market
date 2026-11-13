@@ -14,7 +14,7 @@ use ratatui::Frame;
 
 use crate::config::Tokens;
 use crate::console;
-use crate::node::{Closed, Command, Handle, View};
+use crate::node::{self, Closed, Command, Handle, View};
 
 /// Whether there is a terminal to draw on.
 pub fn available() -> bool {
@@ -74,7 +74,7 @@ pub async fn run(mut handle: Handle, tokens: Tokens) -> Result<View> {
 }
 
 fn short(account: &str) -> String {
-    format!("{}…", &account[..account.len().min(8)])
+    format!("{}…", node::short(account))
 }
 
 fn titled(title: String) -> Block<'static> {

@@ -31,7 +31,7 @@ each one does. You should see, in order:
 Then the tests:
 
 ```sh
-cargo test                  # 72 tests, under half a minute after the first build
+cargo test                  # 76 tests, under half a minute after the first build
 cargo test -p conformance   # 7 tests against the verifier's own engine; fetches near/intents, takes a few minutes the first time
 ```
 
@@ -48,11 +48,15 @@ wants; ten agents are set to quit partway, some in the middle of a ring. Every p
 checked to close before the agents start. It prints each settlement as it happens and a summary
 at the end. It passes when something settled, no ring is left among the live agents' wants and
 none is locked, every transaction reads back valid, every balance adds up, and every bundle that
-went out to a live maker settled. `--seed` gives another market.
+went out to a live maker settled or had its transaction refused by the verifier. `--seed` gives
+another market.
 
-On 13 November 2026, on an Apple M4 Max, seeds 1 to 5 each passed: 61 to 79 rings settled, the
-last of them 16 to 63 seconds after the last agent started. Run one at a time; two at once run
-out of local ports. `docs/DEV-NOTES.md` has the numbers and what these runs found and fixed.
+On 14 November 2026, on an Apple M2 Pro doing other work at the time, seeds 1 to 5 each passed:
+62 to 79 rings settled, the last of them 48 to 73 seconds after the last agent started. The run
+keeps four to five cores busy; with fewer it takes longer, and the market has ten minutes to
+clear. `sim --agents 30` is a smaller market of the same kind: two runs took 3 and 13 seconds.
+Run one at a time; two at once run out of local ports. `docs/DEV-NOTES.md` has the numbers, the
+earlier runs on an Apple M4 Max, and what the runs found and fixed.
 
 ### On screen, as separate processes
 
@@ -208,8 +212,17 @@ verifier and the payer of gas. There is nothing to register anywhere.
   in seconds, but there is no Sybil resistance and no reputation. A maker can announce a want it
   cannot pay for: the dry run refuses the ring, nothing is spent, and the others try again later.
 - **A signed leg is a free option until its deadline.** A proposer who collects signatures and
-  sits on them locks the other makers' wants for up to 30 seconds. It cannot take anything, and a
-  maker refuses deadlines more than a minute ahead.
+  sits on them locks the other makers' wants for 30 seconds, and 10 more while each maker makes
+  sure nothing settled at the last moment. It cannot take anything, and a maker refuses deadlines
+  more than a minute ahead.
+- **A maker's "busy" is taken at its word.** A maker that declines a try because its want is
+  committed elsewhere is asked again later, and the proposer does not step aside for another ring
+  meanwhile. One that keeps saying so, in the ring that comes first for someone's want, keeps that
+  want out of every other ring. It takes nothing.
+- **Not everything a peer sends is bounded.** The tries a node has been asked into and the
+  settlements it has heard of are kept in tables with no cap: the first for up to about 100
+  seconds an entry, the second for as long as the node runs. `docs/DEV-NOTES.md` lists these and
+  the other known gaps.
 - **Wants are public.** Anyone listening sees who wants what at which price.
 - **The devnet is not a chain.** It is the verifier's rules over balances in memory, behind the
   same JSON-RPC calls, for rehearsing. `conformance` is what ties those rules to the real ones.
@@ -230,15 +243,17 @@ verifier and the payer of gas. There is nothing to register anywhere.
 
 ## How this was built
 
-Written during the hackathon with an AI coding assistant (Claude), directed and reviewed by the
-team. Two test vectors come from [NearBy](https://github.com/dastansam/nearby), another entry by
-one of the same people: the NEP-413 signature in `intents/src/nep413.rs` and the transaction
-encoding in `chain/src/tx.rs`. No code from the NEAR Intents repository is copied; `conformance`
-depends on it to test against.
+Written during the hackathon by one person with an AI coding assistant (Claude), who directed and
+reviewed it. Two test vectors come from [NearBy](https://github.com/dastansam/nearby), another
+entry in this hackathon by a different author: the NEP-413 signature in `intents/src/nep413.rs`
+and the transaction encoding in `chain/src/tx.rs`. No code from the NEAR Intents repository is
+copied; `conformance` depends on it to test against.
 
 Libraries: libp2p, tokio, ratatui, axum (devnet only), reqwest, ed25519-dalek, clap.
 
-Related entries by the same people: NearBy, Ainek.
+Other entries in this hackathon: the author of Gossip Market also builds
+[Ainek](https://github.com/sadabaevb/ainek) with a teammate. NearBy, the source of the two test
+vectors above, is that teammate's own entry; its author is not part of this project.
 
 ## Next
 

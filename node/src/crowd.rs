@@ -28,8 +28,11 @@ use crate::node::{self, Command, Handle};
 use crate::sim::{self, FEE_PIPS, VERIFIER};
 use crate::verify::{self, Checked};
 
-/// How long the market has to clear once every agent is up.
-const LIMIT: Duration = Duration::from_secs(180);
+/// How long the market has to clear once every agent is up. Several times what it takes with the
+/// processor to itself, about a minute for a hundred agents on four or five cores: the run is
+/// bound by the processor, and one that lost it to something else for a minute was failed at three
+/// minutes with its last rings still settling.
+const LIMIT: Duration = Duration::from_secs(600);
 
 /// Symbol, contract, decimals, and a price per whole token in millionths of a dollar. Everyone
 /// prices at these, a little in the next maker's favour, so a cycle of wants closes whoever planted
@@ -305,6 +308,8 @@ struct Tally {
     backups: usize,
     /// Why proposals were declined and rings fell through, with ring ids taken out.
     reasons: BTreeMap<String, usize>,
+    /// The rings whose transaction the verifier refused, as their submitters logged it.
+    refused: BTreeSet<String>,
 }
 
 impl Tally {
@@ -339,6 +344,11 @@ impl Tally {
                 .reasons
                 .entry(format!("fell through: {}", Self::plain(ring, reason)))
                 .or_default() += 1;
+        } else if let Some((ring, _)) = line
+            .strip_prefix("ring ")
+            .and_then(|rest| rest.split_once(": the verifier refused: "))
+        {
+            self.refused.insert(ring.to_owned());
         } else if line.contains(" expired unsettled") {
             self.expired += 1;
         } else if line.contains("no word from the proposer") {
@@ -544,6 +554,33 @@ pub async fn run(n: usize, seed: u64) -> Result<()> {
             }
         }
 
+        // Cleared: every set quit has happened, no live want is locked in a ring, and no ring is
+        // left among the live agents' open wants.
+        let quits_done = agents
+            .iter()
+            .all(|agent| !matches!(agent.quit, Some(Quit::At(_))) || agent.gone.is_some());
+        let mut open = Vec::new();
+        let mut locked = 0;
+        for agent in agents.iter().filter(|agent| agent.gone.is_none()) {
+            for want in &agent.handle.view.borrow().wants {
+                locked += usize::from(want.locked.is_some());
+                if want.closed.is_none() && want.remaining > 0 && want.locked.is_none() {
+                    open.push(open_want(
+                        agent.account.clone(),
+                        want.id,
+                        want.rev,
+                        (want.give.clone(), want.remaining),
+                        (want.take.clone(), want.take_for_remaining),
+                    ));
+                }
+            }
+        }
+        let cleared = quits_done && locked == 0 && find_rings(&open, FEE_PIPS).is_empty();
+
+        // The transactions are read after the agents, not before. A maker unlocks its want only
+        // once its ring's transaction is on the devnet, so whatever let the market clear above is
+        // already there to read. Read first, the last ring's transaction could land between the
+        // two looks, and a market that had cleared was failed for a transaction nobody had read.
         for sent in devnet.transactions() {
             if !seen.insert(sent.hash.clone()) {
                 continue;
@@ -585,28 +622,7 @@ pub async fn run(n: usize, seed: u64) -> Result<()> {
             });
         }
 
-        // Cleared: every set quit has happened, no live want is locked in a ring, and no ring is
-        // left among the live agents' open wants.
-        let quits_done = agents
-            .iter()
-            .all(|agent| !matches!(agent.quit, Some(Quit::At(_))) || agent.gone.is_some());
-        let mut open = Vec::new();
-        let mut locked = 0;
-        for agent in agents.iter().filter(|agent| agent.gone.is_none()) {
-            for want in &agent.handle.view.borrow().wants {
-                locked += usize::from(want.locked.is_some());
-                if want.closed.is_none() && want.remaining > 0 && want.locked.is_none() {
-                    open.push(open_want(
-                        agent.account.clone(),
-                        want.id,
-                        want.rev,
-                        (want.give.clone(), want.remaining),
-                        (want.take.clone(), want.take_for_remaining),
-                    ));
-                }
-            }
-        }
-        if quits_done && locked == 0 && find_rings(&open, FEE_PIPS).is_empty() {
+        if cleared {
             cleared_at = Some(now);
             break;
         }
@@ -645,7 +661,8 @@ pub async fn run(n: usize, seed: u64) -> Result<()> {
         let times: Vec<f64> = settled.iter().map(|s| (s.at - up).as_secs_f64()).collect();
         if let (Some(first), Some(last)) = (times.first(), times.last()) {
             println!(
-                "  timing       after the last agent started: first ring at {first:.1}s, half by {:.1}s, last at {last:.1}s",
+                "  timing       after the last agent started: first ring at {first:.1}s, half by {:.1}s, \
+                 last at {last:.1}s",
                 times[times.len() / 2]
             );
         }
@@ -765,13 +782,15 @@ pub async fn run(n: usize, seed: u64) -> Result<()> {
             "the market cleared with nothing settled, though every planted ring closes"
         );
         println!(
-        "  ok  the market cleared at {:.1}s: no ring is left among the {} live agents' open wants, and none is locked",
-        cleared_at.as_secs_f64(),
-        live.len()
-    );
+            "  ok  the market cleared at {:.1}s: no ring is left among the {} live agents' open wants, \
+             and none is locked",
+            cleared_at.as_secs_f64(),
+            live.len()
+        );
 
-        // Every transaction, read back from the devnet and checked from scratch above. Anything sent
-        // since the last look is read now.
+        // Every transaction was read back from the devnet and checked from scratch above, the last
+        // of them after the market was seen to clear. One that arrives after that still fails the
+        // run: the balances below are checked against what was read.
         for sent in devnet.transactions() {
             ensure!(
                 seen.contains(&sent.hash),
@@ -782,9 +801,10 @@ pub async fn run(n: usize, seed: u64) -> Result<()> {
         let ids: BTreeSet<&String> = settled.iter().map(|s| &s.ring_id).collect();
         ensure!(ids.len() == settled.len(), "a ring settled in two transactions");
         println!(
-        "  ok  {} transactions read back from the verifier: every signature valid, every one nets to zero after the fee",
-        settled.len()
-    );
+            "  ok  {} transactions read back from the verifier: every signature valid, \
+             every one nets to zero after the fee",
+            settled.len()
+        );
 
         // The balances the transactions add up to, against the verifier's.
         let ledger = devnet.ledger();
@@ -864,12 +884,18 @@ pub async fn run(n: usize, seed: u64) -> Result<()> {
             }
         }
         println!(
-        "  ok  every live maker of a settled ring saw its own leg settle, and none thinks a ring settled that did not"
-    );
+            "  ok  every live maker of a settled ring saw its own leg settle, \
+             and none thinks a ring settled that did not"
+        );
 
         let held_live: Vec<&(usize, String)> = held.iter().filter(|(i, _)| agents[*i].gone.is_none()).collect();
-        let unsettled: Vec<&&(usize, String)> =
-            held_live.iter().filter(|(_, ring)| !by_id.contains_key(ring)).collect();
+        // A bundle whose transaction the verifier refused rightly never settles: on a machine
+        // short of processor, one can reach the verifier after the deadline its legs were signed
+        // with. What this check is for is a bundle that went out and nobody settled or was refused.
+        let unsettled: Vec<&&(usize, String)> = held_live
+            .iter()
+            .filter(|(_, ring)| !by_id.contains_key(ring) && !tally.refused.contains(ring))
+            .collect();
         // What the holder said about the ring is what tells a backup that never fired from a bundle
         // that should not have settled.
         for (i, ring) in &unsettled {
@@ -892,9 +918,12 @@ pub async fn run(n: usize, seed: u64) -> Result<()> {
             );
         }
         let held_rings: BTreeSet<&String> = held_live.iter().map(|(_, ring)| ring).collect();
+        let refused_held = held_rings.iter().filter(|ring| !by_id.contains_key(**ring)).count();
         println!(
-            "  ok  all {} rings a live maker held the complete bundle for settled",
-            held_rings.len()
+            "  ok  of the {} rings a live maker held the complete bundle for, {} settled and the verifier refused \
+             the transaction of {refused_held}",
+            held_rings.len(),
+            held_rings.len() - refused_held
         );
         Ok(())
     })();

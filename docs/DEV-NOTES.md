@@ -77,8 +77,11 @@ agents. The runs found five problems:
   held by the last. A maker asked to sign a try now waits out its deadline before proposing the
   ring itself.
 - **Most of the work was Kademlia.** A profile of a run spent most of its time in DHT queries: a
-  node walked the DHT on every new connection, about 90 per node here. It now walks once, on its
-  first.
+  node asked for a walk of the DHT on every new connection, about 90 per node here. It no longer
+  asks per connection. libp2p-kad starts a walk itself when a peer enters its routing table, at
+  most one every half second, and every five minutes. The one walk a node still asks for, on its
+  first connection, starts only if the table already holds a peer, as when mDNS found one; in
+  `sim` it does not start, and the library's own walk is what finds the other peers.
 
 - **The last rings of four were never proposed.** A ring had to be the first found from every
   one of its wants. Where every cycle of four closes, the search from one want runs out of steps
@@ -136,6 +139,69 @@ kept, and it has not happened since. The check now counts a proposer's bundle on
 passed the dry run and gone out (a bundle the verifier refused rightly never settles), and
 prints what the holder said about the ring if it happens again.
 
+## Two reviews and a profile, 14 November 2026
+
+The code was reviewed twice and a hundred-agent run was profiled, the day before the deadline.
+What that found, and what was done about it:
+
+- **A third of a node's work was its own screen.** Every change to what a node shows rebuilt the
+  list of its peers' accounts, and getting an account out of a peer id decodes an ed25519 key.
+  With about 90 peers each, that was a third of the busy processor time of a hundred agents. A
+  node now works the name out once, when the peer connects: seed 1 took 454 seconds of processor
+  time before and 318 in the next run. What is left is mostly the connections themselves: about
+  two thirds of the busy time goes on reading, writing and checking gossip. The ring search,
+  which a node runs five times a second, is about 3%.
+- **The simulation could fail a market that had cleared.** It read the devnet's transactions and
+  then the agents. The last ring's transaction could land between the two looks: the market was
+  seen to clear with a transaction nobody had read, and the run failed on it. The transactions
+  are now read after the agents. This came from reading the code; no run was seen to fail on it.
+- **A hundred agents had three minutes.** One run of seed 1 that lost the processor to other work
+  stalled for a minute, with 269 tries timing out for want of an answer against 6 in the next
+  run, and was failed at 180 seconds with 78 rings settled and three wants still locked. The
+  limit is now ten minutes.
+- **A bundle that reached the verifier late failed the run.** The last check wants every bundle
+  that went out to a live maker to settle. In a run that lost the processor to other work for its
+  first half minute, three transactions reached the verifier after the 8-second deadline their
+  legs were signed with and were refused. The market cleared and every other check passed, and
+  the run failed on two rings that never settled. A bundle whose transaction the verifier refused
+  is no longer counted as lost, and the checks say how many there were.
+- **A name off the network could stop a node.** Accounts were shortened for the log at the eighth
+  byte. A notice naming a maker with a longer character there panicked the node that logged it.
+  Names are cut at a character.
+- **A leg was given up at the first unspent answer after its deadline.** A transaction that beat
+  the deadline can show a little after it, by a node's own clock and through an RPC node a block
+  or two behind. The want was reopened meanwhile and could have been filled a second time. A node
+  now watches a leg for 10 seconds past its deadline, 1 in the simulations, before it reopens the
+  want.
+- **A maker's one try at settling a ring could be spent on nothing.** The try begins with a free
+  look at whether the nonce is spent. If that look failed, the try was gone and nothing had been
+  sent. The try is now spent when a transaction goes out.
+- **A notice could hold a maker off.** A maker told that its ring had settled looked at the chain
+  instead of submitting, and looked again at each notice. With the old code, a proposer that
+  shared the bundle, never submitted and published a false notice every 20 ms kept the ring
+  from settling until its signatures expired, every time it was tried. A notice no longer holds
+  the submit off, since the submit asks the chain first anyway, and no longer brings the next
+  look forward.
+- **`http://localhost:80@example.com` passed as local** in the check that keeps the public
+  `devnet:` keys off real networks. What comes before an `@` is now left out of the host.
+- **The node did not walk the DHT when these notes said it did.** See "Most of the work was
+  Kademlia" above. In `sim`, the walk a node asks for on its first connection did not start on
+  any of the three nodes.
+
+With all of it, on an Apple M2 Pro doing other work at the time, one run at a time:
+
+| Seed | Rings settled | Of two, three, four | Last ring after the last agent started | Processor time |
+|---|---|---|---|---|
+| 1 | 79 | 59, 20, 0 | 72 s | 270 s |
+| 2 | 62 | 61, 1, 0 | 54 s | 189 s |
+| 3 | 68 | 58, 10, 0 | 73 s | 269 s |
+| 4 | 78 | 50, 27, 1 | 52 s | 221 s |
+| 5 | 70 | 59, 10, 1 | 48 s | 216 s |
+
+Each passed every check, on four to five cores. With eight busy processes competing for the same
+ten cores, seed 1 settled 81 rings, the last 226 seconds after the last agent started, and passed
+every check. What the reviews found and nothing was done about is under the known gaps.
+
 ## Decisions
 
 - **Rust workspace, five crates.** `intents` is pure and has no async, so the rules can be tested
@@ -191,7 +257,25 @@ prints what the holder said about the ring if it happens again.
   close to half of all tries fell through, mostly on a want committed to another ring or to an
   earlier try of the same one, and the last rings took up to 63 seconds to settle. A first round
   that reserves wants without signing anything would let a failed try release them at once;
-  nothing does that yet.
+  nothing does that yet. A ring of two that was only declined, where nobody but the proposer had
+  signed, is held off just the same.
+- A maker's refusal "that want is committed to ring …" is read off the text of its answer and
+  taken at its word: the proposer does not rest the ring or step aside from it. A maker that
+  keeps answering so, in the ring that comes first for another's want, keeps that want out of
+  every other ring. A field in the answer, and a limit on how often it is believed, would close
+  this; both change the messages.
+- A maker that submits a bundle itself asks whether its nonce is spent and then sends, without
+  the dry run a proposer makes. If the ring can no longer settle, the transaction fails on chain
+  and costs its gas.
+- A node checks a leg against its whole balance, not against what its other signed legs leave
+  it. With two wants giving the same token it can sign for more than it holds. The verifier
+  refuses whichever ring comes second; a dry run made before the first settled does not catch
+  it, and that costs a failed transaction's gas.
+- The search keeps the first 64 rings through a want, then sets aside the ones the node cannot
+  pay for or that are resting. If all 64 are set aside, a ring behind them is not found.
+- Two tables grow with what peers send and have no cap: the tries a node was asked into by any
+  peer that puts the two of them in a ring that nets, for up to about 100 seconds an entry, and
+  the settlements it heard of, for as long as it runs.
 - A maker waits `(rank + 1) × submit stagger` after it receives a bundle before submitting it
   itself, and does not once the deadline has passed. With the simulations' timings (8 seconds
   ahead, 2 seconds a rank) the last maker of a ring of four never gets to; with the defaults
@@ -206,7 +290,8 @@ prints what the holder said about the ring if it happens again.
 - A node copies its whole book for its screen whenever a want is announced again, even unchanged.
   At the book's limit of 10,000 wants that is more than a node can keep up with, by an estimate,
   not a measurement.
-- A hundred agents in one process keep five to eight cores busy. They hold about 6,500 loopback
+- A hundred agents in one process keep four to five cores busy on an Apple M2 Pro; before 14
+  November, five to eight on an Apple M4 Max. They hold about 6,500 loopback
   connections, and leave about 9,300 sockets in TIME_WAIT for 30 seconds when they exit, against
   16,384 ephemeral ports on macOS. Two hundred-agent runs at once, or one started straight after
   another, run out of ports: dials fail, and the run fails or does not clear.

@@ -44,6 +44,8 @@ struct Inner {
     access_nonces: HashMap<String, u64>,
     /// By hash: what `send_tx` answered, for `tx` to answer again.
     transactions: HashMap<String, Value>,
+    /// By view method: how many of its next calls are to fail.
+    failing: HashMap<String, usize>,
     started: Instant,
 }
 
@@ -53,6 +55,7 @@ impl Devnet {
             ledger,
             access_nonces: HashMap::new(),
             transactions: HashMap::new(),
+            failing: HashMap::new(),
             started: Instant::now(),
         };
         Self {
@@ -65,6 +68,12 @@ impl Devnet {
     pub async fn serve(self, listener: TcpListener) -> std::io::Result<()> {
         let app = Router::new().route("/", post(rpc)).with_state(self);
         axum::serve(listener, app).await
+    }
+
+    /// Makes the next `count` calls of the contract's view method `method` fail, as an RPC node
+    /// that cannot answer does. For rehearsing what an agent does while the chain cannot be read.
+    pub fn fail_next(&self, method: &str, count: usize) {
+        self.lock().failing.insert(method.to_owned(), count);
     }
 
     /// The balances and nonces as they stand.
@@ -151,7 +160,7 @@ impl Devnet {
     }
 
     fn query(&self, params: &Value) -> Result<Value, Value> {
-        let inner = self.lock();
+        let mut inner = self.lock();
         let at = json!({ "block_height": inner.height(), "block_hash": inner.block_hash() });
         let with_block = |mut answer: Value| {
             answer["block_height"] = at["block_height"].clone();
@@ -178,6 +187,13 @@ impl Devnet {
                     .and_then(|bytes| serde_json::from_slice(&bytes).ok())
                     .unwrap_or(Value::Null);
                 let method = params["method_name"].as_str().unwrap_or_default();
+                if let Some(left) = inner.failing.get_mut(method).filter(|left| **left > 0) {
+                    *left -= 1;
+                    return Err(handler_error(
+                        "INTERNAL_ERROR",
+                        json!({ "error_message": "the devnet was told to fail this call" }),
+                    ));
+                }
                 match view(&inner.ledger, method, &args) {
                     Ok(value) => Ok(with_block(
                         json!({ "result": value.to_string().into_bytes(), "logs": [] }),
@@ -251,7 +267,8 @@ impl Devnet {
         let _ = self.events.send(format!(
             "block {} tx {hash} from {}… {verdict}",
             inner.height(),
-            &call.signer[..8]
+            // Whatever name the transaction carries: one shorter than this must not panic the devnet.
+            call.signer.get(..8).unwrap_or(&call.signer)
         ));
         Ok(outcome)
     }
