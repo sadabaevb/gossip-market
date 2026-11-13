@@ -85,11 +85,19 @@ the last gives to the first.
 
 ### Search
 
-Every node runs the same search over the open wants it holds (`market/src/ring.rs`,
-`find_rings`): depth-first over wants that take what the previous one gives, closing when the
-first takes what the last gives. A ring is written starting from its smallest `(maker, id)`, so it
-has one spelling. Results are ordered shortest first, then by ring id. The ring id is the first 16
-hex characters of the SHA-256 of its legs.
+Every node runs the same search over the open wants it holds, from its own wants
+(`market/src/ring.rs`, `rings_of` and `first_rings_of`): depth-first over wants that take what the previous one gives,
+closing with a want that takes what the last gives and gives what the first takes. Every maker of
+a ring therefore finds it. A ring is written starting from its smallest `(maker, id)`, so it has
+one spelling. Results are ordered shortest first, then by ring id, and at most 64 are kept. A node
+searches from each of its wants on its own, so that rings through one want that is in many do not
+fill the 64 and leave its other wants' rings unfound. The ring id is the first 16 hex characters
+of the SHA-256 of its legs.
+
+All rings of one length are searched before any of the next, so in a crowded book the bound on
+the search (20,000 steps per starting want and length) is spent on the rings with the fewest
+signatures to collect. A cycle is sized only if what its makers give, multiplied together, is at
+least what they take; with fewer, sizing would always fail.
 
 ### Sizing
 
@@ -122,12 +130,32 @@ reads from the contract.
 
 All messages are JSON over `/gossipmarket/settle/1`.
 
+### Which rings
+
+A node considers the rings that include one of its own unlocked wants and that it can pay for,
+and of those only the ones that come first for every want in them (`first_rings_of`): no ring
+the search finds through any of their wants comes before them in the order above. Rings it
+cannot pay for are left out before this choice, not after, so that one too big for its balance
+does not hide a smaller ring through the same want. Where the
+search sees every ring, two such rings never share a want, so proposers do not lock one want into
+rings that cannot both settle, and the first ring of the whole book always qualifies. In a book
+crowded enough to exhaust the search, the search from one want can miss a ring that the search
+from another finds; the smallest ring any search finds then still qualifies for whoever found it,
+so some ring is always proposed, though two may share a want. A ring the node saw fail in itself (a maker never answered or
+could not be reached, or the verifier refused) steps aside while it rests. A ring that only met
+a busy maker does not: it is alive, and the other makers still put it first.
+
 ### Whose turn
 
-A node considers the rings that include one of its own unlocked wants and that it can pay for. The
-makers of a ring are ranked by account id. The maker ranked `n` (from zero) proposes once it has
-known the ring could be formed for `n × 2 s`. A ring that fell through is left alone for 10
-seconds, plus the same stagger.
+The makers of a ring are ranked by account id. The maker ranked `n` (from zero) proposes once it
+has known the ring could be formed for `n × 2 s`. A ring that fell through is left alone for 10
+seconds, plus the same stagger, counted from the deadline of the try that fell through: the
+makers who signed it are held until then. A maker asked to sign a try waits out that try's
+deadline the same way before proposing the ring itself, whatever it answered. Otherwise the
+makers of one ring take turns proposing it out of step, each try meeting the makers held by the
+last, and it never settles. Only a proposal from one of the ring's makers, with a deadline it
+could sign for, counts: otherwise anyone could keep a ring's makers waiting by proposing it to
+them every so often.
 
 ### Propose
 
@@ -142,6 +170,7 @@ A maker signs its leg only if all of these hold (`Node::consider_proposal`):
 
 - `fee_pips` equals the fee it reads from the contract;
 - the ring is sound at that fee;
+- the peer that sent it is a maker of the ring;
 - it has a leg in the ring, for a want of its own that is open and not locked;
 - the leg is within that want as last announced: same tokens and revision, no more given, no
   worse a price;
@@ -257,8 +286,9 @@ Defaults, in `node/src/config.rs`:
 | collects signatures and does nothing | wants locked until the deadline, at most 60 s |
 | collects signatures and settles a different batch with one of them | that maker gets exactly what its leg says; the others' legs expire |
 | sends a false notice | nothing: makers go by their own nonce |
+| proposes a ring it is not in | nothing: the makers decline it and go on as before |
 | floods wants | bounded per maker and in total, not per network: there is no Sybil resistance |
 | listens | learns every want and price |
 
 None of these moves anyone's tokens against what they signed. `node/src/tests.rs` runs the first
-three against honest nodes.
+three, and the stranger's proposal, against honest nodes.

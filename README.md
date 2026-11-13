@@ -31,9 +31,28 @@ each one does. You should see, in order:
 Then the tests:
 
 ```sh
-cargo test                  # 56 tests, about 20 seconds after the first build
-cargo test -p conformance   # 6 tests against the verifier's own engine; fetches near/intents, takes a few minutes the first time
+cargo test                  # 72 tests, under half a minute after the first build
+cargo test -p conformance   # 7 tests against the verifier's own engine; fetches near/intents, takes a few minutes the first time
 ```
+
+### A hundred agents
+
+```sh
+cargo run --release -- sim --agents 100
+```
+
+A hundred agents in one process, each told the addresses of two or three others, with wants over
+five tokens everyone prices alike, so that rings compete for the same wants. Planted among them
+are rings of two, three and four, pairs of rings that need the same want, and agents with several
+wants; ten agents are set to quit partway, some in the middle of a ring. Every planted ring is
+checked to close before the agents start. It prints each settlement as it happens and a summary
+at the end. It passes when something settled, no ring is left among the live agents' wants and
+none is locked, every transaction reads back valid, every balance adds up, and every bundle that
+went out to a live maker settled. `--seed` gives another market.
+
+On 13 November 2026, on an Apple M4 Max, seeds 1 to 5 each passed: 61 to 79 rings settled, the
+last of them 16 to 63 seconds after the last agent started. Run one at a time; two at once run
+out of local ports. `docs/DEV-NOTES.md` has the numbers and what these runs found and fixed.
 
 ### On screen, as separate processes
 
@@ -118,9 +137,9 @@ verifier and the payer of gas. There is nothing to register anywhere.
    |-- is my nonce spent? (each maker asks the chain itself) ->|
 ```
 
-- Every node runs the same ring search over the same wants and gets the same rings. The makers of
-  a ring take turns proposing it, lowest account first, a couple of seconds apart, so usually
-  exactly one does.
+- Every node searches the wants it has heard for the rings it is in, so every maker of a ring
+  finds that ring, sized and named the same way. The makers of a ring take turns proposing it,
+  lowest account first, a couple of seconds apart, so usually exactly one does.
 - A maker signs only if the ring nets at the fee it reads from the contract itself, and its leg is
   within the want it last announced: no more given, no worse a price.
 - Before submitting, the proposer hands every maker the complete bundle. If the proposer goes
@@ -157,8 +176,9 @@ verifier and the payer of gas. There is nothing to register anywhere.
   `intents.near` on mainnet and got the expected answers. The fee was 1 pip (a millionth). A fifth
   probe, a withdraw, was added with `withdraw` and got its expected answer the same day.
 - **Against misbehaving peers.** `node/src/tests.rs` runs whole markets in which a proposer
-  collects signatures and vanishes, a maker never answers, or signatures are withheld until they
-  expire. The honest nodes settle anyway or get their wants back.
+  collects signatures and vanishes, a maker never answers, signatures are withheld until they
+  expire, or a stranger proposes rings it is not in. The honest nodes settle anyway, get their
+  wants back, or turn the stranger away.
 - **On mainnet, with funds.** On 12 November 2026 three agents on one machine settled a ring of
   three through `intents.near` in one `execute_intents`: 0.1 USDC, 0.03 wrapped NEAR and 0.1 USDT,
   each leg signed by its own maker, 19 Tgas burnt

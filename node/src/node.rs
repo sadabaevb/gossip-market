@@ -12,12 +12,12 @@ use anyhow::{Context, Result};
 use chain::{ChainError, Verifier, VerifierState};
 use chrono::{DateTime, TimeZone, Utc};
 use futures::StreamExt;
-use intents::{nonce, AccountId, Keypair, SignedIntent, TokenId};
+use intents::{AccountId, Keypair, SignedIntent, TokenId};
 use libp2p::request_response::{self, OutboundRequestId, ResponseChannel};
 use libp2p::swarm::SwarmEvent;
 use libp2p::{gossipsub, identify, kad, mdns, Multiaddr, PeerId, Swarm};
 use market::want::take_for;
-use market::{find_rings, Book, Ring, SignedWant, Want};
+use market::{first_rings_of, Book, Ring, SignedWant, Want};
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 
@@ -60,7 +60,13 @@ pub enum Conduct {
     /// Proposes, collects, shares the bundle with the makers, and never submits it.
     #[cfg(test)]
     SharesButNeverSubmits,
+    /// Proposes the rings it is not in to their makers, over and over.
+    #[cfg(test)]
+    ProposesOthersRings,
 }
+
+/// A ring by the wants it is made of, whatever the amounts, as `Ring::wants` gives it.
+type RingWants = Vec<(AccountId, u64, u64)>;
 
 /// A running node, from outside.
 pub struct Handle {
@@ -85,13 +91,23 @@ pub struct View {
     pub wants: Vec<WantView>,
     pub book: Vec<Want>,
     pub settlements: Vec<Settlement>,
+    /// The rings this node holds every signed leg of, and so could settle by itself, once the
+    /// bundle has gone out to every maker. A proposer's bundle counts only after the dry run: one
+    /// the verifier refused rightly never settles.
+    pub holding: Vec<String>,
     /// Numbered lines, oldest first.
     pub log: VecDeque<(u64, String)>,
 }
 
+/// How a maker declines a want already in another try. A proposer reads it as "busy", not as
+/// the ring failing, and does not step aside for it, so the text must stay the same at both ends.
+pub(crate) const COMMITTED: &str = "that want is committed to ring ";
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WantView {
     pub id: u64,
+    /// Raised whenever the want is announced on new terms. Part of the id of every ring through it.
+    pub rev: u64,
     pub give: TokenId,
     pub remaining: u128,
     pub take: TokenId,
@@ -211,9 +227,17 @@ struct Node {
     mine: BTreeMap<u64, MyWant>,
     next_want_id: u64,
     /// By the wants a ring is made of: when this node first saw it could be formed.
-    first_seen: HashMap<Vec<(AccountId, u64, u64)>, Instant>,
-    /// By the same: when a try at it last fell through.
-    fell_through: HashMap<Vec<(AccountId, u64, u64)>, Instant>,
+    first_seen: HashMap<RingWants, Instant>,
+    /// By the same: when a try at it last fell through, or, while makers may still be committed
+    /// to that try, when they will be free. The rest before trying again counts from then. And
+    /// whether the ring failed in itself, rather than for want of a free maker: one never answered
+    /// or could not be reached, or the verifier refused. Only such a ring steps aside, while it
+    /// rests, for the rings it would come before; a ring that met a busy maker is alive, and the
+    /// other makers still put it first.
+    fell_through: HashMap<RingWants, (Instant, bool)>,
+    /// By the same: until when a try of another maker's may hold the signatures of the ring's
+    /// makers. Unlike a ring that fell through, such a ring is alive, and still comes first.
+    tried: HashMap<RingWants, Instant>,
     proposing: HashMap<String, Proposing>,
     committed: HashMap<String, Committed>,
     outbound: HashMap<OutboundRequestId, String>,
@@ -231,7 +255,7 @@ fn now_ms() -> u64 {
         .map_or(0, |d| d.as_millis() as u64)
 }
 
-fn short(account: &str) -> &str {
+pub(crate) fn short(account: &str) -> &str {
     &account[..account.len().min(8)]
 }
 
@@ -293,6 +317,7 @@ pub async fn spawn_with(config: NodeConfig, timings: Timings, conduct: Conduct) 
         next_want_id: 1,
         first_seen: HashMap::new(),
         fell_through: HashMap::new(),
+        tried: HashMap::new(),
         proposing: HashMap::new(),
         committed: HashMap::new(),
         outbound: HashMap::new(),
@@ -380,6 +405,7 @@ impl Node {
                 .values()
                 .map(|want| WantView {
                     id: want.id,
+                    rev: want.rev,
                     give: want.give.clone(),
                     remaining: want.remaining,
                     take: want.take.clone(),
@@ -390,6 +416,12 @@ impl Node {
                 .collect(),
             book: self.book.open().cloned().collect(),
             settlements: self.settlements.clone(),
+            holding: self
+                .committed
+                .values()
+                .filter(|committed| committed.shared && committed.bundle.is_some())
+                .map(|committed| committed.ring.id())
+                .collect(),
             log: self.log.clone(),
         }
     }
@@ -563,9 +595,14 @@ impl Node {
 
     // ----- rings -----
 
-    /// Proposes the rings this node is part of and whose turn it is to propose.
+    /// Proposes the rings this node is part of that come first for each of their wants, when it is
+    /// its turn.
     fn consider_rings(&mut self) {
         let Some(state) = self.state else { return };
+        #[cfg(test)]
+        if self.conduct == Conduct::ProposesOthersRings {
+            return self.propose_others_rings(state);
+        }
         let locked: BTreeSet<u64> = self
             .mine
             .values()
@@ -576,22 +613,35 @@ impl Node {
             .book
             .open()
             .filter(|want| want.maker != self.me || !locked.contains(&want.id));
-        let rings = find_rings(candidates, state.fee_pips);
-
         let now = Instant::now();
+        // A ring that fell through and is resting does not hold the others back meanwhile: it may
+        // never settle, if a maker is gone or cannot pay.
+        let resting = |ring: &Ring| {
+            self.fell_through
+                .get(&ring.wants())
+                .is_some_and(|(at, failed)| *failed && now.duration_since(*at) < self.timings.retry_after)
+        };
+        // A ring this node cannot pay for would only be refused by the verifier. Passed over here,
+        // rather than once chosen, it does not hide the rings through the same want it can pay for.
+        let unaffordable = |ring: &Ring| {
+            ring.leg_of(&self.me)
+                .is_some_and(|leg| self.balances.get(&leg.give).copied().unwrap_or(0) < leg.give_amount)
+        };
+        let rings = first_rings_of(candidates, state.fee_pips, &self.me, |ring| {
+            resting(ring) || unaffordable(ring)
+        });
+
         let possible: BTreeSet<_> = rings.iter().map(Ring::wants).collect();
         self.first_seen.retain(|wants, _| possible.contains(wants));
         self.fell_through
-            .retain(|_, at| now.duration_since(*at) < self.timings.retry_after * 4);
+            .retain(|_, (at, _)| now.duration_since(*at) < self.timings.retry_after * 4);
+        self.tried
+            .retain(|_, until| now.duration_since(*until) < self.timings.retry_after * 4);
 
         for ring in rings {
             let Some(leg) = ring.leg_of(&self.me) else { continue };
             let want_id = leg.want_id;
             if self.mine.get(&want_id).is_none_or(|want| want.locked.is_some()) {
-                continue;
-            }
-            // A ring this node cannot pay for would only be refused by the verifier.
-            if self.balances.get(&leg.give).copied().unwrap_or(0) < leg.give_amount {
                 continue;
             }
             // The makers take turns, lowest account first, so that usually exactly one proposes.
@@ -601,10 +651,10 @@ impl Node {
             let wants = ring.wants();
             let seen = *self.first_seen.entry(wants.clone()).or_insert(now);
             let my_turn = now.duration_since(seen) >= self.timings.propose_stagger * rank;
-            let rested = self.fell_through.get(&wants).is_none_or(|at| {
-                now.duration_since(*at) >= self.timings.retry_after + self.timings.propose_stagger * rank
-            });
-            if my_turn && rested {
+            let rest = self.timings.retry_after + self.timings.propose_stagger * rank;
+            let rested = |since: Option<&Instant>| since.is_none_or(|at| now.duration_since(*at) >= rest);
+            let fell_through = self.fell_through.get(&wants).map(|(at, _)| at);
+            if my_turn && rested(fell_through) && rested(self.tried.get(&wants)) {
                 self.propose(ring, state);
             }
         }
@@ -616,10 +666,7 @@ impl Node {
             .leg_of(&self.me)?
             .diff()?
             .with_memo(format!("gossipmarket:{}", ring.id()));
-        let nonce = match self.nonce_kind {
-            NonceKind::Versioned => nonce::versioned(state.salt, deadline),
-            NonceKind::Plain => nonce::plain(),
-        };
+        let nonce = self.nonce_kind.nonce(state.salt, deadline);
         let signed = self
             .key
             .sign_intents(self.chain.contract(), deadline, &nonce, vec![diff.to_intent()]);
@@ -647,6 +694,27 @@ impl Node {
             },
         );
         self.dirty = true;
+    }
+
+    #[cfg(test)]
+    fn propose_others_rings(&mut self, state: VerifierState) {
+        let deadline_ms = now_ms() + self.timings.intent_ttl.as_millis() as u64;
+        for ring in market::find_rings(self.book.open(), state.fee_pips) {
+            if ring.leg_of(&self.me).is_some() {
+                continue;
+            }
+            let proposal = Proposal {
+                ring: ring.clone(),
+                fee_pips: state.fee_pips,
+                deadline_ms,
+            };
+            for leg in &ring.legs {
+                if let Some(peer) = peer_of(&leg.maker) {
+                    let request = Request::Propose(proposal.clone());
+                    self.swarm.behaviour_mut().settle.send_request(&peer, request);
+                }
+            }
+        }
     }
 
     fn propose(&mut self, ring: Ring, state: VerifierState) {
@@ -699,7 +767,7 @@ impl Node {
 
     /// Gives up on a ring this node proposed before its bundle went out. Its own signature never
     /// left, so its want is free again at once.
-    fn abandon(&mut self, ring_id: &str, why: &str) {
+    fn abandon(&mut self, ring_id: &str, why: &str, failed: bool) {
         let Some(proposing) = self.proposing.remove(ring_id) else {
             return;
         };
@@ -707,7 +775,13 @@ impl Node {
         if let Some(committed) = self.committed.remove(ring_id) {
             self.unlock(committed.want_id);
         }
-        self.fell_through.insert(proposing.ring.wants(), Instant::now());
+        // Whoever signed stays committed to this try until its deadline and turns the ring down
+        // until then. Tried again sooner, the ring meets those refusals, the makers who sign the
+        // new try are locked past the old ones, and they are never all free at once: in a market
+        // of a hundred, rings of four went round like that until the end.
+        let committed_for = Duration::from_millis(proposing.deadline_ms.saturating_sub(now_ms()));
+        self.fell_through
+            .insert(proposing.ring.wants(), (Instant::now() + committed_for, failed));
         self.say(format!("ring {ring_id} fell through: {why}"));
     }
 
@@ -725,7 +799,10 @@ impl Node {
         };
         let signed = match response {
             Response::Signed { signed } => signed,
-            Response::Declined { reason } => return self.abandon(&ring_id, &format!("a maker declined: {reason}")),
+            Response::Declined { reason } => {
+                let busy = reason.starts_with(COMMITTED);
+                return self.abandon(&ring_id, &format!("a maker declined: {reason}"), !busy);
+            }
             Response::Ack => return,
         };
         let Some(maker) = account_of(&from) else { return };
@@ -736,7 +813,11 @@ impl Node {
             .ring
             .check_signed(i, &signed, self.chain.contract(), proposing.deadline_ms)
         {
-            return self.abandon(&ring_id, &format!("{} signed something else: {why}", short(&maker)));
+            return self.abandon(
+                &ring_id,
+                &format!("{} signed something else: {why}", short(&maker)),
+                true,
+            );
         }
         proposing.signatures.insert(maker, signed);
         if proposing.signatures.len() < proposing.ring.legs.len() || proposing.submitting {
@@ -769,7 +850,7 @@ impl Node {
     /// The dry run of a ring this node proposed came back.
     fn on_simulated(&mut self, ring_id: String, result: Result<(), ChainError>) {
         if let Err(e) = result {
-            return self.abandon(&ring_id, &e.to_string());
+            return self.abandon(&ring_id, &e.to_string(), true);
         }
         #[cfg(test)]
         if self.conduct == Conduct::Withholds {
@@ -848,7 +929,7 @@ impl Node {
             return;
         }
         let response = match request {
-            Request::Propose(proposal) => match self.consider_proposal(&proposal) {
+            Request::Propose(proposal) => match self.consider_proposal(account_of(&from).as_deref(), &proposal) {
                 Ok(signed) => Response::Signed { signed },
                 Err(reason) => {
                     let from = account_of(&from).unwrap_or_default();
@@ -870,8 +951,8 @@ impl Node {
 
     /// Signs this node's leg of a ring someone else proposed, if it is what this node offered.
     /// Nothing the proposer says is taken on trust: the ring is checked whole and the leg against
-    /// the want as this node last announced it.
-    fn consider_proposal(&mut self, proposal: &Proposal) -> Result<SignedIntent, String> {
+    /// the want as this node last announced it. `from` is the account of the peer that sent it.
+    fn consider_proposal(&mut self, from: Option<&str>, proposal: &Proposal) -> Result<SignedIntent, String> {
         let state = self.state.ok_or("not ready: the verifier has not been read yet")?;
         if proposal.fee_pips != state.fee_pips {
             return Err(format!(
@@ -885,20 +966,32 @@ impl Node {
             return Err("not a ring that nets".into());
         }
         let leg = ring.leg_of(&self.me).ok_or("this node is not in the ring")?.clone();
+        // A maker proposes only rings it is in. From anyone else, a proposal would hold this node
+        // off the ring below for nothing, and a stranger could keep doing so.
+        if !from.is_some_and(|from| from != self.me && ring.leg_of(from).is_some()) {
+            return Err("the proposer is not in the ring".into());
+        }
+        let ahead = proposal.deadline_ms.saturating_sub(now_ms());
+        if !(2_000..=MAX_INTENT_TTL.as_millis() as u64).contains(&ahead) {
+            return Err("the deadline is too close or too far".into());
+        }
+        // Whatever this node answers now, the makers who sign this try are held until its
+        // deadline. Proposing the ring from here before then would only meet them: the tries of a
+        // ring's makers then go round out of step for ever, as they did for a ring of four in a
+        // market of a hundred. Only a try every honest maker could sign counts, as above.
+        let until = Instant::now() + Duration::from_millis(ahead);
+        let tried = self.tried.entry(ring.wants()).or_insert(until);
+        *tried = (*tried).max(until);
         let want = self.mine.get(&leg.want_id).ok_or("no such want")?;
         if want.closed.is_some() {
             return Err("that want is closed".into());
         }
         if let Some(ring_id) = &want.locked {
-            return Err(format!("that want is committed to ring {ring_id}"));
+            return Err(format!("{COMMITTED}{ring_id}"));
         }
         leg.is_within(&self.announcement(want))?;
         if self.balances.get(&leg.give).copied().unwrap_or(0) < leg.give_amount {
             return Err("this node does not hold that much".into());
-        }
-        let ahead = proposal.deadline_ms.saturating_sub(now_ms());
-        if !(2_000..=MAX_INTENT_TTL.as_millis() as u64).contains(&ahead) {
-            return Err("the deadline is too close or too far".into());
         }
         let deadline = Utc
             .timestamp_millis_opt(proposal.deadline_ms as i64)
@@ -943,6 +1036,7 @@ impl Node {
         let rank = makers.iter().position(|maker| **maker == me).unwrap_or(0) as u32;
         committed.bundle = Some(bundle.signed);
         committed.submit_at = Some(Instant::now() + stagger * (rank + 1));
+        self.dirty = true;
     }
 
     fn on_notice(&mut self, notice: Notice) {
@@ -1055,7 +1149,8 @@ impl Node {
         self.proposing.remove(ring_id);
         self.unlock(committed.want_id);
         if !filled {
-            self.fell_through.insert(committed.ring.wants(), Instant::now());
+            self.fell_through
+                .insert(committed.ring.wants(), (Instant::now(), false));
             self.say(format!(
                 "ring {ring_id} expired unsettled; want #{} is open again",
                 committed.want_id
@@ -1180,7 +1275,7 @@ impl Node {
             .map(|(ring_id, _)| ring_id.clone())
             .collect();
         for ring_id in late {
-            self.abandon(&ring_id, "not every maker answered in time");
+            self.abandon(&ring_id, "not every maker answered in time", true);
         }
         self.follow_up();
         self.consider_rings();
@@ -1204,7 +1299,12 @@ impl Node {
                 if self.peers.insert(peer_id) {
                     let who = account_of(&peer_id).unwrap_or_else(|| peer_id.to_string());
                     self.say(format!("connected to {}", short(&who)));
-                    let _ = self.swarm.behaviour_mut().kad.bootstrap();
+                    // One walk of the DHT, on joining, finds the peers beyond the first. One per
+                    // connection was a walk for every peer each node met: with a hundred nodes,
+                    // most of their work went on that.
+                    if self.peers.len() == 1 {
+                        let _ = self.swarm.behaviour_mut().kad.bootstrap();
+                    }
                     // Tell the newcomer what is on offer as soon as it can hear: gossip takes a
                     // moment to learn that a new peer is listening.
                     self.announce_at = self.announce_at.min(Instant::now() + Duration::from_millis(700));
@@ -1263,7 +1363,7 @@ impl Node {
             },
             BehaviourEvent::Settle(request_response::Event::OutboundFailure { request_id, error, .. }) => {
                 if let Some(ring_id) = self.outbound.remove(&request_id) {
-                    self.abandon(&ring_id, &format!("a maker could not be reached: {error}"));
+                    self.abandon(&ring_id, &format!("a maker could not be reached: {error}"), true);
                 }
             }
             _ => {}

@@ -6,9 +6,10 @@
 use anyhow::{Context, Result};
 use chain::{ChainError, Verifier, VerifierState};
 use chrono::{Duration, Utc};
-use intents::{nonce, FtWithdraw, Keypair, SignedIntent, TokenDiff, TokenId};
+use intents::{nonce, Keypair, SignedIntent, TokenDiff, TokenId};
 
 use crate::config::{pips, NodeConfig};
+use crate::withdraw;
 
 /// One question for the verifier and the answer that shows agents and contract agree.
 pub struct Probe {
@@ -19,6 +20,8 @@ pub struct Probe {
     /// What that answer shows.
     pub shows: &'static str,
 }
+
+const WITHDRAW: &str = "a withdraw signed as `gossipmarket withdraw` signs it";
 
 /// The questions, signed by a key made up on the spot.
 pub fn probes(verifier: &str, state: VerifierState, give: &TokenId, take: &TokenId) -> Vec<Probe> {
@@ -36,18 +39,18 @@ pub fn probes(verifier: &str, state: VerifierState, give: &TokenId, take: &Token
     let mut altered = versioned.clone();
     altered.payload.message = altered.payload.message.replace("\"-1000\"", "\"-1\"");
 
-    // To the key's own account: a receiver that certainly exists, and is nobody's.
-    let withdraw = FtWithdraw::new(give, key.account_id(), 1_000).map(|withdraw| Probe {
-        what: "a withdraw signed as `gossipmarket withdraw` signs it",
-        signed: vec![key.sign_intents(
-            verifier,
-            deadline,
-            &nonce::versioned(state.salt, deadline),
-            vec![withdraw.with_memo("gossipmarket preflight").to_intent()],
-        )],
-        expect: "insufficient balance or overflow",
-        shows: "the contract read the withdraw's token, receiver and amount, and stopped only at the balance",
-    });
+    // To the key's own account: a receiver that certainly exists, and is nobody's. Of the first
+    // NEP-141 token of the two, the only kind `withdraw` takes.
+    let nonce = nonce::versioned(state.salt, deadline);
+    let withdraw = [give, take]
+        .into_iter()
+        .find_map(|token| withdraw::sign(&key, verifier, token, &key.account_id(), 1_000, &nonce, deadline))
+        .map(|signed| Probe {
+            what: WITHDRAW,
+            signed: vec![signed],
+            expect: "insufficient balance or overflow",
+            shows: "the contract read the withdraw's token, receiver and amount, and stopped only at the balance",
+        });
 
     let mut probes = vec![
         Probe {
@@ -103,7 +106,11 @@ pub async fn run(config: &NodeConfig) -> Result<()> {
     };
 
     let mut agreed = true;
-    for probe in probes(&config.verifier, state, give, take) {
+    let probes = probes(&config.verifier, state, give, take);
+    if !probes.iter().any(|probe| probe.what == WITHDRAW) {
+        println!("skip  {WITHDRAW}\n      -> neither {give} nor {take} is a NEP-141 token, the only kind it takes");
+    }
+    for probe in probes {
         let answer = verifier.simulate(&probe.signed).await;
         let said = match &answer {
             Ok(()) => "it would settle".to_owned(),

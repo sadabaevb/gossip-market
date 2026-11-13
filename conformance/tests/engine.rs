@@ -133,10 +133,7 @@ impl State for Contract {
         let token = TokenId::from(defuse_core::token_id::nep141::Nep141TokenId::new(
             withdraw.token.clone(),
         ));
-        let balance = self.balances.entry((owner_id.to_owned(), token)).or_default();
-        *balance = balance
-            .checked_sub(withdraw.amount)
-            .ok_or(DefuseError::BalanceOverflow)?;
+        self.internal_sub_balance(owner_id, [(token, withdraw.amount)])?;
         self.withdrawn.push((owner_id.to_owned(), withdraw));
         Ok(())
     }

@@ -11,6 +11,14 @@ cargo run -- sim
 Everything in one process, a few seconds, no setup. This is the one a reviewer runs first. It ends
 with `SIMULATION PASSED` or a non-zero exit.
 
+```sh
+cargo run --release -- sim --agents 100
+```
+
+The same with a hundred agents whose wants compete, ten of whom quit partway. It prints each
+settlement as it happens and a summary at the end, and takes about a minute once built. `--seed`
+gives another market. Run one at a time: two at once run out of local ports.
+
 ## 2. The devnet, on screen
 
 This is the one to record.

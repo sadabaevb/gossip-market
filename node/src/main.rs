@@ -3,6 +3,7 @@
 //! them.
 mod config;
 mod console;
+mod crowd;
 mod net;
 mod node;
 mod preflight;
@@ -35,7 +36,15 @@ struct Cli {
 enum Run {
     /// The whole market on this machine in a few seconds: a local verifier, three agents, a
     /// three-party ring, then a trade after the first node is stopped. Needs nothing set up.
-    Sim,
+    Sim {
+        /// Instead, this many agents with overlapping wants, some of whom quit partway. Passes
+        /// when the market clears and every transaction checks out.
+        #[arg(long)]
+        agents: Option<usize>,
+        /// Which plan of wants, bootstraps and quits to run with `--agents`.
+        #[arg(long, requires = "agents", default_value_t = 1)]
+        seed: u64,
+    },
     /// Runs one agent.
     Node {
         /// Its config file, e.g. demo/alice.toml.
@@ -117,7 +126,8 @@ async fn main() -> ExitCode {
 
 async fn run(command: Run) -> Result<()> {
     match command {
-        Run::Sim => sim::run().await,
+        Run::Sim { agents: None, .. } => sim::run().await,
+        Run::Sim { agents: Some(n), seed } => crowd::run(n, seed).await,
         Run::Node { config: path, plain } => {
             let config = NodeConfig::load(&path)?;
             let tokens = config.tokens();

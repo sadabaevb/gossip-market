@@ -18,11 +18,11 @@ use crate::config::{devnet_key, NodeConfig, Timings, TokenConfig, Tokens, WantCo
 use crate::node::{self, Command, Handle, Settlement};
 use crate::verify;
 
-const VERIFIER: &str = "intents.devnet";
+pub(crate) const VERIFIER: &str = "intents.devnet";
 /// What `intents.near` took on 12 November 2026: one pip, a millionth of each amount given.
-const FEE_PIPS: u32 = 1;
+pub(crate) const FEE_PIPS: u32 = 1;
 
-fn token_table() -> BTreeMap<String, TokenConfig> {
+pub(crate) fn token_table() -> BTreeMap<String, TokenConfig> {
     let token = |id: &str, decimals| TokenConfig {
         id: format!("nep141:{id}.devnet"),
         decimals,
@@ -89,7 +89,8 @@ async fn until(agents: &mut [Agent], what: &str, limit: Duration, done: impl Fn(
         .map_err(|_| anyhow!("timed out after {limit:?} waiting until {what}"))
 }
 
-fn config(name: &str, rpc: &str, bootstrap: Vec<String>, wants: Vec<WantConfig>) -> NodeConfig {
+/// An agent on the devnet at `rpc`. The simulations and the tests all start theirs from this.
+pub(crate) fn config(name: &str, rpc: &str, bootstrap: Vec<String>, wants: Vec<WantConfig>) -> NodeConfig {
     NodeConfig {
         name: name.into(),
         key: format!("devnet:{name}"),
@@ -106,6 +107,15 @@ fn config(name: &str, rpc: &str, bootstrap: Vec<String>, wants: Vec<WantConfig>)
     }
 }
 
+/// A devnet verifier over `ledger`, answering JSON-RPC on a free local port: it and its URL.
+pub(crate) async fn serve_devnet(ledger: Ledger) -> Result<(Devnet, String)> {
+    let devnet = Devnet::new(ledger);
+    let listener = TcpListener::bind("127.0.0.1:0").await.context("binding the devnet")?;
+    let rpc = format!("http://{}", listener.local_addr()?);
+    tokio::spawn(devnet.clone().serve(listener));
+    Ok((devnet, rpc))
+}
+
 pub async fn run() -> Result<()> {
     let tokens = Tokens::from(token_table());
     let id = |symbol: &str| tokens.id(symbol).expect("a token of the simulation");
@@ -120,10 +130,7 @@ pub async fn run() -> Result<()> {
         let (token, units) = tokens.parse(holds)?;
         ledger.deposit(&devnet_key(name).account_id(), &token, units);
     }
-    let devnet = Devnet::new(ledger);
-    let listener = TcpListener::bind("127.0.0.1:0").await.context("binding the devnet")?;
-    let rpc = format!("http://{}", listener.local_addr()?);
-    tokio::spawn(devnet.clone().serve(listener));
+    let (devnet, rpc) = serve_devnet(ledger).await?;
     let verifier = Verifier::new(rpc.clone(), VERIFIER);
     println!("devnet verifier `{VERIFIER}` at {rpc}, fee {FEE_PIPS} pip (0.0001%, as on mainnet)");
     for (name, holds, give, take) in AGENTS {

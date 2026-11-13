@@ -7,5 +7,5 @@ pub mod ring;
 pub mod want;
 
 pub use book::Book;
-pub use ring::{find_rings, Leg, Ring};
+pub use ring::{find_rings, first_rings_of, rings_of, Leg, Ring};
 pub use want::{SignedWant, Want};

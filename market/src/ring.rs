@@ -5,10 +5,10 @@
 //! The verifier settles a ring only if every token nets to zero after its fee, so sizing one is
 //! arithmetic against the contract's rounding. `conformance` checks that arithmetic against the
 //! contract's own engine.
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use intents::{net_of_fee, AccountId, SignedIntent, TokenDiff, TokenId};
-use primitive_types::U256;
+use primitive_types::{U256, U512};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -19,8 +19,12 @@ use crate::Want;
 pub const MAX_RING: usize = 4;
 /// Rings one search returns.
 const MAX_RINGS: usize = 64;
-/// Wants a search walks through per starting want, to bound a crowded book.
+/// Wants a search looks at per starting want and ring length, to bound a crowded book.
 const MAX_STEPS: usize = 20_000;
+/// Steps a cycle costs when it is sized: sizing it and naming the ring take about as long as
+/// looking at a hundred wants. Without this, a book in which most cycles close would have a node
+/// size tens of thousands of rings every time it looked.
+const SIZE_STEPS: usize = 100;
 
 /// One maker's part in a ring.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -163,43 +167,244 @@ impl Ring {
 /// Every ring the open wants allow at this fee, sized as large as the wants permit. Shortest
 /// first, then by id: every node lists them in the same order.
 pub fn find_rings<'a>(wants: impl IntoIterator<Item = &'a Want>, fee_pips: u32) -> Vec<Ring> {
-    let wants: Vec<&Want> = wants.into_iter().filter(|want| want.is_open()).collect();
-    let mut rings = Vec::new();
-    for start in 0..wants.len() {
-        let mut steps = 0;
-        extend(&wants, &mut vec![start], fee_pips, &mut rings, &mut steps);
-    }
-    rings.sort_by_cached_key(|ring: &Ring| (ring.legs.len(), ring.id()));
-    rings.truncate(MAX_RINGS);
-    rings
+    let index = Index::new(wants);
+    let starts: Vec<usize> = (0..index.wants.len()).collect();
+    index.search(&starts, true, fee_pips, MAX_RING)
 }
 
-/// Depth-first: grows `path` by wants that take what its last want gives, and closes it when the
-/// first want takes what the last gives. Only paths whose first want is their smallest are kept,
-/// so each ring is found once, in its one spelling.
-fn extend(wants: &[&Want], path: &mut Vec<usize>, fee_pips: u32, rings: &mut Vec<Ring>, steps: &mut usize) {
-    let key = |i: usize| (&wants[i].maker, wants[i].id);
-    let (first, last) = (path[0], path[path.len() - 1]);
-    if path.len() >= 2 && wants[first].take == wants[last].give {
-        let cycle: Vec<&Want> = path.iter().map(|&i| wants[i]).collect();
-        rings.extend(size(&cycle, fee_pips));
+/// The rings `maker` is part of, in the order `find_rings` lists rings, from one search over the
+/// maker's own wants. That costs its own handful of wants rather than the whole book, and rings it
+/// is not in cannot crowd its own out of the first `MAX_RINGS`, though rings through one of its
+/// wants can crowd out the others': `first_rings_of` searches want by want.
+pub fn rings_of<'a>(wants: impl IntoIterator<Item = &'a Want>, fee_pips: u32, maker: &str) -> Vec<Ring> {
+    let index = Index::new(wants);
+    index.search(&index.of(maker), false, fee_pips, MAX_RING)
+}
+
+/// The rings `maker` is part of that come first, in the order `find_rings` lists rings, for every
+/// want in them: no ring the search finds through any of their wants comes before them.
+/// `passed_over` rings are left out of the comparison, as if they were not there: the ones a node
+/// has seen fall through, and those it cannot pay for.
+///
+/// What a node proposes from. Where the search sees every ring, two of these never share a want,
+/// so makers who each propose only these do not lock each other's wants into rings that cannot all
+/// settle; and the first ring in the whole book is always one of them, so a crowded market still
+/// settles a ring at a time at the least. Proposing from every ring through the node instead, a
+/// market of a hundred agents whose wants overlapped settled ever fewer rings until it stopped.
+///
+/// Where the book is crowded enough to exhaust the search, the search from one want can miss a
+/// ring that the search from another finds. The smallest ring any search finds then still comes
+/// first for whoever found it, so some ring is always proposed, though two may share a want.
+pub fn first_rings_of<'a>(
+    wants: impl IntoIterator<Item = &'a Want>,
+    fee_pips: u32,
+    maker: &str,
+    passed_over: impl Fn(&Ring) -> bool,
+) -> Vec<Ring> {
+    let index = Index::new(wants);
+    let key = |ring: &Ring| (ring.legs.len(), ring.id());
+    // By (position, longest ring), the first ring found from that want: rings of the maker's that
+    // share a counterparty's want ask the same question of it.
+    let mut first_from: BTreeMap<(usize, usize), Option<(usize, String)>> = BTreeMap::new();
+    let mut first = Vec::new();
+    // From each of the maker's wants on its own. Searched together, the rings through one want
+    // that is in many could fill the search, and those through the others would go unfound.
+    for at in index.of(maker) {
+        // The first ring through a want of the maker's is the only one that can come first for it.
+        let rings = index.search(&[at], false, fee_pips, MAX_RING);
+        let Some(ring) = rings.into_iter().find(|ring| !passed_over(ring)) else {
+            continue;
+        };
+        let first_everywhere = ring.legs.iter().filter(|leg| leg.maker != maker).all(|leg| {
+            // A ring that comes first is no longer than this one.
+            let Some(at) = index.position(&leg.maker, leg.want_id) else {
+                return false;
+            };
+            // Not "the first found is this ring": a search that ran out of steps may not find it,
+            // and then no ring was first for every want and nobody proposed anything, as rings of
+            // four were left in a market of a hundred.
+            first_from
+                .entry((at, ring.legs.len()))
+                .or_insert_with(|| {
+                    let rings = index.search(&[at], false, fee_pips, ring.legs.len());
+                    rings
+                        .into_iter()
+                        .find(|other| !passed_over(other))
+                        .map(|other| key(&other))
+                })
+                .as_ref()
+                .is_none_or(|other| *other >= key(&ring))
+        });
+        if first_everywhere {
+            first.push(ring);
+        }
     }
-    if path.len() == MAX_RING {
-        return;
+    first.sort_by_cached_key(key);
+    first
+}
+
+/// The open wants in (maker, id) order, so that comparing positions compares keys, with makers
+/// and tokens numbered so that the search compares integers rather than account names.
+struct Index<'a> {
+    wants: Vec<&'a Want>,
+    makers: Vec<u32>,
+    gives: Vec<u32>,
+    takes: Vec<u32>,
+    /// By token, the positions of the wants that take it, in order: the ways a path can go on.
+    taking: Vec<Vec<usize>>,
+    /// By (token taken, token given), the positions of those wants, best price for the ring first:
+    /// the want that closes a path is looked up, and the first one whose price cannot close it
+    /// ends the lookup.
+    closing: HashMap<(u32, u32), Vec<usize>>,
+}
+
+impl<'a> Index<'a> {
+    /// The positions of `maker`'s wants.
+    fn of(&self, maker: &str) -> Vec<usize> {
+        (0..self.wants.len())
+            .filter(|&i| self.wants[i].maker == maker)
+            .collect()
     }
-    for next in 0..wants.len() {
-        *steps += 1;
-        if *steps > MAX_STEPS {
+
+    fn new(wants: impl IntoIterator<Item = &'a Want>) -> Self {
+        let mut wants: Vec<&Want> = wants.into_iter().filter(|want| want.is_open()).collect();
+        wants.sort_by(|a, b| (&a.maker, a.id).cmp(&(&b.maker, b.id)));
+
+        fn number<'a>(names: &mut HashMap<&'a str, u32>, name: &'a str) -> u32 {
+            let next = names.len() as u32;
+            *names.entry(name).or_insert(next)
+        }
+        let (mut makers, mut tokens) = (HashMap::new(), HashMap::new());
+        let mut index = Index {
+            makers: wants.iter().map(|want| number(&mut makers, &want.maker)).collect(),
+            gives: wants.iter().map(|want| number(&mut tokens, &want.give)).collect(),
+            takes: wants.iter().map(|want| number(&mut tokens, &want.take)).collect(),
+            taking: vec![Vec::new(); tokens.len()],
+            closing: HashMap::new(),
+            wants,
+        };
+        for i in 0..index.wants.len() {
+            index.taking[index.takes[i] as usize].push(i);
+            index
+                .closing
+                .entry((index.takes[i], index.gives[i]))
+                .or_default()
+                .push(i);
+        }
+        let wants = &index.wants;
+        for list in index.closing.values_mut() {
+            // More given per unit taken comes first: give_a / take_a > give_b / take_b, multiplied
+            // out. Ties stay in key order.
+            list.sort_by(|&a, &b| {
+                let a_first = U256::from(wants[a].give_amount) * U256::from(wants[b].take_amount);
+                let b_first = U256::from(wants[b].give_amount) * U256::from(wants[a].take_amount);
+                b_first.cmp(&a_first)
+            });
+        }
+        index
+    }
+
+    /// Where the want `id` of `maker` is, if it is open.
+    fn position(&self, maker: &str, id: u64) -> Option<usize> {
+        self.wants
+            .binary_search_by(|want| (want.maker.as_str(), want.id).cmp(&(maker, id)))
+            .ok()
+    }
+
+    /// The rings of up to `longest` makers through the wants at `starts`, at most `MAX_RINGS`,
+    /// shortest first and then by id. With `from_smallest`, a ring is only looked for from its
+    /// smallest want, so that each is found once when every want is a start.
+    fn search(&self, starts: &[usize], from_smallest: bool, fee_pips: u32, longest: usize) -> Vec<Ring> {
+        let mut rings = Vec::new();
+        // All rings of one length before any of the next: a crowded book spends its steps on the
+        // rings with the fewest signatures to collect, and once there are `MAX_RINGS`, every
+        // longer ring would be cut anyway.
+        for len in 2..=longest.min(MAX_RING) {
+            if rings.len() >= MAX_RINGS {
+                break;
+            }
+            for &start in starts {
+                let mut steps = 0;
+                self.walk(&mut vec![start], len, from_smallest, &mut steps, &mut |path| {
+                    // The one spelling starts from the smallest want.
+                    let mut cycle: Vec<&Want> = path.iter().map(|&i| self.wants[i]).collect();
+                    let smallest = (0..path.len()).min_by_key(|&k| path[k]).unwrap_or(0);
+                    cycle.rotate_left(smallest);
+                    rings.extend(size(&cycle, fee_pips));
+                });
+            }
+        }
+        rings.sort_by_cached_key(|ring: &Ring| (ring.legs.len(), ring.id()));
+        rings.truncate(MAX_RINGS);
+        rings
+    }
+
+    /// Grows `path` by wants that take what its last want gives until it is one short of `len`,
+    /// then closes it with the wants that give what its first one takes.
+    fn walk(
+        &self,
+        path: &mut Vec<usize>,
+        len: usize,
+        from_smallest: bool,
+        steps: &mut usize,
+        found: &mut impl FnMut(&[usize]),
+    ) {
+        let (first, last) = (path[0], path[path.len() - 1]);
+        if path.len() + 1 == len {
+            let Some(closing) = self.closing.get(&(self.gives[last], self.takes[first])) else {
+                return;
+            };
+            // A ring can only net if what its makers give, multiplied together, is at least what
+            // they take: each gives at most what it received times its own price. Sizing would
+            // find the same, in up to 64 laps of arithmetic per want.
+            let product = |amount: fn(&Want) -> u128| {
+                path.iter()
+                    .fold(U512::one(), |product, &i| product * U512::from(amount(self.wants[i])))
+            };
+            let (given, taken) = (product(|want| want.give_amount), product(|want| want.take_amount));
+            for &next in closing {
+                *steps += 1;
+                if *steps > MAX_STEPS {
+                    return;
+                }
+                let want = self.wants[next];
+                if given * U512::from(want.give_amount) < taken * U512::from(want.take_amount) {
+                    // Every want after this one in the list prices the ring worse.
+                    return;
+                }
+                if self.fits(path, next, from_smallest) {
+                    path.push(next);
+                    found(path);
+                    path.pop();
+                    *steps += SIZE_STEPS;
+                }
+            }
             return;
         }
-        let fits = wants[next].take == wants[last].give
-            && key(next) > key(first)
-            && path.iter().all(|&i| wants[i].maker != wants[next].maker);
-        if fits {
-            path.push(next);
-            extend(wants, path, fee_pips, rings, steps);
-            path.pop();
+        let taking = &self.taking[self.gives[last] as usize];
+        // In key order, so the wants smaller than the first are skipped in one go.
+        let skip = if from_smallest {
+            taking.partition_point(|&i| i <= first)
+        } else {
+            0
+        };
+        for &next in &taking[skip..] {
+            *steps += 1;
+            if *steps > MAX_STEPS {
+                return;
+            }
+            if self.fits(path, next, from_smallest) {
+                path.push(next);
+                self.walk(path, len, from_smallest, steps, found);
+                path.pop();
+            }
         }
+    }
+
+    /// Whether the want at `next` can join `path`: by a maker not already in it and, when rings
+    /// are searched from their smallest want, after the first.
+    fn fits(&self, path: &[usize], next: usize, from_smallest: bool) -> bool {
+        (!from_smallest || next > path[0]) && path.iter().all(|&i| self.makers[i] != self.makers[next])
     }
 }
 
@@ -262,6 +467,8 @@ fn size(cycle: &[&Want], fee_pips: u32) -> Option<Ring> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::*;
     use crate::want::tests::{key, want};
 
@@ -513,5 +720,274 @@ mod tests {
 
         let five = chain(&["nep141:a", "nep141:b", "nep141:c", "nep141:d", "nep141:e"]);
         assert!(find_rings(&five, 100).is_empty());
+    }
+
+    /// A want by any of millions of makers, which `want` with its byte of seed cannot name.
+    fn want_by(maker: u64, id: u64, give: (&str, u128), take: (&str, u128)) -> Want {
+        Want {
+            maker: format!("{maker:064x}"),
+            id,
+            ..want(1, give, take)
+        }
+    }
+
+    /// Every ring, found the slow way: each ordering of up to four wants by different makers in
+    /// which every want gives what the next takes, kept only when it starts from its smallest want.
+    fn every_ring(wants: &[Want], fee_pips: u32) -> Vec<Ring> {
+        fn grow<'a>(open: &[&'a Want], path: &mut Vec<&'a Want>, fee_pips: u32, rings: &mut Vec<Ring>) {
+            let n = path.len();
+            let closes = (0..n).all(|i| path[i].give == path[(i + 1) % n].take);
+            let smallest = path
+                .iter()
+                .skip(1)
+                .all(|w| (&w.maker, w.id) > (&path[0].maker, path[0].id));
+            if n >= 2 && closes && smallest {
+                rings.extend(size(path, fee_pips));
+            }
+            if n == MAX_RING {
+                return;
+            }
+            for want in open {
+                if path.iter().all(|w| w.maker != want.maker) {
+                    path.push(want);
+                    grow(open, path, fee_pips, rings);
+                    path.pop();
+                }
+            }
+        }
+        let open: Vec<&Want> = wants.iter().filter(|want| want.is_open()).collect();
+        let mut rings = Vec::new();
+        grow(&open, &mut Vec::new(), fee_pips, &mut rings);
+        rings.sort_by_cached_key(|ring| (ring.legs.len(), ring.id()));
+        rings
+    }
+
+    /// 300 small books by five makers over four tokens, each with its fee: prices within a few
+    /// percent of each other, so that some rings close and some only nearly do. The same books
+    /// every run, so that a failure is the same failure.
+    fn random_books() -> Vec<(Vec<Want>, u32)> {
+        // splitmix64
+        let mut state = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = |below: u64| {
+            state = state.wrapping_add(0x9e37_79b9_7f4a_7c15);
+            let mut z = state;
+            z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+            (z ^ (z >> 31)) % below
+        };
+        let tokens = ["nep141:a", "nep141:b", "nep141:c", "nep141:d"];
+        (0..300)
+            .map(|_| {
+                let wants: Vec<Want> = (0..4 + next(11))
+                    .map(|id| {
+                        let give = next(4) as usize;
+                        let take = (give + 1 + next(3) as usize) % 4;
+                        want_by(
+                            next(5),
+                            id,
+                            (tokens[give], 900 + next(200) as u128),
+                            (tokens[take], 900 + next(200) as u128),
+                        )
+                    })
+                    .collect();
+                (wants, [0, 100, 10_000][next(3) as usize])
+            })
+            .collect()
+    }
+
+    // The search skips most of the book: it follows tokens, looks the closing want up, and stops
+    // at the first price that cannot close. If any of that skipped a ring that is there, or found
+    // one twice, a node would miss trades or propose one ring under two names.
+    #[test]
+    fn the_search_finds_what_trying_every_ordering_finds() {
+        let (mut rings, mut longest) = (0, 0);
+        for (wants, fee_pips) in random_books() {
+            let expected = every_ring(&wants, fee_pips);
+            assert!(expected.len() < MAX_RINGS, "a book this small should not need cutting");
+            assert_eq!(find_rings(&wants, fee_pips), expected, "{wants:#?}");
+            for maker in 0..5 {
+                let maker = format!("{maker:064x}");
+                let theirs: Vec<Ring> = expected
+                    .iter()
+                    .filter(|r| r.leg_of(&maker).is_some())
+                    .cloned()
+                    .collect();
+                assert_eq!(rings_of(&wants, fee_pips, &maker), theirs, "{maker} in {wants:#?}");
+            }
+            rings += expected.len();
+            longest = longest.max(expected.iter().map(|ring| ring.legs.len()).max().unwrap_or(0));
+        }
+        // Otherwise the books above would prove nothing.
+        assert!(
+            rings > 300 && longest == MAX_RING,
+            "{rings} rings, the longest of {longest}"
+        );
+    }
+
+    // A maker's wants are searched one at a time. Searched together, a want in more rings of two
+    // than one search returns filled it, and a ring of three through the maker's other want was
+    // never found, so never proposed.
+    #[test]
+    fn a_want_in_many_rings_does_not_crowd_out_the_makers_other_wants() {
+        // Maker 0 gives a for b, mirrored by 70 others; and gives c for d in one ring of three.
+        let mut wants = vec![
+            want_by(0, 1, ("nep141:a", 1_000_000), ("nep141:b", 990_000)),
+            want_by(0, 2, ("nep141:c", 1_000_000), ("nep141:d", 990_000)),
+            want_by(1, 1, ("nep141:d", 1_000_000), ("nep141:e", 990_000)),
+            want_by(2, 1, ("nep141:e", 1_000_000), ("nep141:c", 990_000)),
+        ];
+        wants.extend((3..73u64).map(|maker| want_by(maker, 1, ("nep141:b", 1_000_000), ("nep141:a", 990_000))));
+        // Otherwise the rings of two fit in one search and this proves nothing.
+        const { assert!(MAX_RINGS < 70, "70 rings of two fit in one search") };
+
+        let first = first_rings_of(&wants, 1, &format!("{:064x}", 0), |_| false);
+        assert!(
+            first.iter().any(|ring| ring.legs.len() == 3),
+            "the ring of three is not among {first:?}"
+        );
+        assert!(first.iter().any(|ring| ring.legs.len() == 2), "nor is a ring of two");
+    }
+
+    // Where rings are too many for the search to see them all, the search from one want misses
+    // rings that the search from another finds. When a ring had to be the first found from every
+    // one of its wants, no ring was, and a market of a hundred stopped with rings of four open and
+    // nobody proposing any of them.
+    #[test]
+    fn a_book_too_crowded_to_search_whole_still_has_a_ring_someone_proposes() {
+        // Wants only go a -> b -> c -> d -> a, eight on each step, so every ring has four legs, and
+        // everyone asks 1% less than it gives, so every cycle of them closes.
+        let tokens = ["nep141:a", "nep141:b", "nep141:c", "nep141:d"];
+        let wants: Vec<Want> = (0..32u64)
+            .map(|maker| {
+                let step = (maker / 8) as usize;
+                want_by(maker, 0, (tokens[step], 1_000_000), (tokens[(step + 3) % 4], 990_000))
+            })
+            .collect();
+        // Otherwise the search would see every ring and the book would prove nothing.
+        const {
+            assert!(
+                MAX_STEPS / SIZE_STEPS < 8 * 8 * 8,
+                "512 rings through each want fit the search"
+            )
+        };
+        let proposing = (0..32u64)
+            .filter(|maker| !first_rings_of(&wants, 1, &format!("{maker:064x}"), |_| false).is_empty())
+            .count();
+        assert!(proposing > 0, "nobody proposes any ring");
+    }
+
+    // A node proposes only the rings that come first for each of their wants. If two such rings
+    // could share a want, two proposers would lock it into rings that cannot both settle, which
+    // is how a crowded market ground to a halt; if the makers of a ring disagreed on whether it
+    // comes first, it would wait on a proposer who never proposes it; and if the first ring of
+    // the book were not among them, nothing would settle.
+    #[test]
+    fn rings_that_come_first_never_share_a_want_and_the_first_ring_is_one() {
+        let mut proposed_in_all = 0;
+        for (wants, fee_pips) in random_books() {
+            let every = every_ring(&wants, fee_pips);
+            let mut proposed: BTreeMap<String, Ring> = BTreeMap::new();
+            for maker in (0..5).map(|maker| format!("{maker:064x}")) {
+                for ring in first_rings_of(&wants, fee_pips, &maker, |_| false) {
+                    for leg in &ring.legs {
+                        let theirs = first_rings_of(&wants, fee_pips, &leg.maker, |_| false);
+                        assert!(theirs.contains(&ring), "{} does not see {ring:?} come first", leg.maker);
+                    }
+                    proposed.insert(ring.id(), ring);
+                }
+            }
+            let mut used = BTreeSet::new();
+            for ring in proposed.values() {
+                for leg in &ring.legs {
+                    assert!(
+                        used.insert((&leg.maker, leg.want_id)),
+                        "two rings share a want: {proposed:#?}"
+                    );
+                }
+            }
+            if let Some(best) = every.first() {
+                assert!(
+                    proposed.contains_key(&best.id()),
+                    "the first ring is not proposed: {wants:#?}"
+                );
+            }
+            // A ring the node saw fall through steps aside for the next.
+            if let [best, next, ..] = &every[..] {
+                let maker = &next.legs[0].maker;
+                let passed_over = |ring: &Ring| ring == best;
+                let without = first_rings_of(&wants, fee_pips, maker, passed_over);
+                assert!(!without.contains(best) && without.contains(next), "{wants:#?}");
+            }
+            proposed_in_all += proposed.len();
+        }
+        assert!(proposed_in_all > 300, "{proposed_in_all} rings proposed in all");
+    }
+
+    // Wants that chain into one another but never close, and one ring of three among them.
+    // Searching the whole book at every step, the search ran out of steps on chains of four before
+    // it tried the ring, and missed it in any book of a hundred wants or more.
+    #[test]
+    fn a_ring_is_found_however_many_wants_surround_it() {
+        let tokens = ["a", "b", "c", "d", "e", "f", "g", "h"].map(|t| format!("nep141:{t}"));
+        let book = |noise: u64| -> Vec<Want> {
+            let mut wants: Vec<Want> = (0..noise)
+                .map(|n| {
+                    let give = &tokens[(n % 8) as usize];
+                    let take = &tokens[((n / 8 + n + 1) % 8) as usize];
+                    let take = if take == give {
+                        &tokens[((n + 1) % 8) as usize]
+                    } else {
+                        take
+                    };
+                    // Asks twice what it gives: no chain of these ever nets.
+                    want_by(100 + n / 4, n % 4, (give, 1_000_000), (take, 2_000_000))
+                })
+                .collect();
+            for (maker, give, take) in [(1, 0, 2), (2, 1, 0), (3, 2, 1)] {
+                wants.push(want_by(maker, 0, (&tokens[give], 1_000_000), (&tokens[take], 990_000)));
+            }
+            wants
+        };
+        let wants = book(300);
+        let rings = find_rings(&wants, 100);
+        assert_eq!(rings.len(), 1);
+        assert_eq!(rings[0].legs.len(), 3);
+        for maker in 1..=3 {
+            assert_eq!(rings_of(&wants, 100, &format!("{maker:064x}")), rings);
+        }
+        // What a node searches, in a book as full as a node lets it get.
+        let full = book(crate::book::MAX_WANTS as u64 - 3);
+        assert_eq!(rings_of(&full, 100, &format!("{:064x}", 1)), rings);
+    }
+
+    // A node proposes only rings it is part of. Cut to the first 64 of the whole book, a busy
+    // market's rings of two would leave a node's ring of three off its list, and it would never
+    // propose it or sign for it in its turn.
+    #[test]
+    fn a_node_sees_its_own_rings_however_many_others_there_are() {
+        // A hundred pairs trading USDC for NEAR, and this node in a ring of three on other tokens.
+        let mut wants: Vec<Want> = (0..100u64)
+            .flat_map(|pair| {
+                [
+                    want_by(100 + 2 * pair, 0, (USDC, 1_000_000), (NEAR, 990_000)),
+                    want_by(101 + 2 * pair, 0, (NEAR, 1_000_000), (USDC, 990_000)),
+                ]
+            })
+            .collect();
+        let x = "nep141:x.near";
+        wants.push(want_by(1, 0, (CREDITS, 1_000_000), (DATA, 990_000)));
+        wants.push(want_by(2, 0, (DATA, 1_000_000), (x, 990_000)));
+        wants.push(want_by(3, 0, (x, 1_000_000), (CREDITS, 990_000)));
+        let me = format!("{:064x}", 1);
+
+        let everyone = find_rings(&wants, 100);
+        assert_eq!(everyone.len(), MAX_RINGS);
+        assert!(everyone.iter().all(|ring| ring.legs.len() == 2));
+
+        let mine = rings_of(&wants, 100, &me);
+        assert_eq!(mine.len(), 1);
+        assert_eq!(mine[0].legs.len(), 3);
+        assert!(mine[0].leg_of(&me).is_some() && mine[0].is_sound(100));
+        assert!(!everyone.contains(&mine[0]));
     }
 }

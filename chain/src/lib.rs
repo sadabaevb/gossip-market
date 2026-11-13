@@ -5,5 +5,5 @@ pub mod devnet;
 pub mod rpc;
 pub mod tx;
 
-pub use devnet::Devnet;
+pub use devnet::{Devnet, Sent};
 pub use rpc::{ChainError, Recorded, Verifier, VerifierState};

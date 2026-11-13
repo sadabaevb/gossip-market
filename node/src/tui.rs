@@ -358,6 +358,7 @@ mod tests {
             balances: vec![("nep141:usdc".into(), 40_000_000), ("nep141:credits".into(), 99_990)],
             wants: vec![WantView {
                 id: 2,
+                rev: 0,
                 give: "nep141:usdc".into(),
                 remaining: 5_000_000,
                 take: "nep141:credits".into(),
@@ -383,6 +384,7 @@ mod tests {
                 submitter: Some(other.clone()),
                 mine: true,
             }],
+            holding: vec![],
             log: [(1, "12:00:01 SETTLED ring".to_owned())].into(),
         };
         let screen = screen(&view, "want 5 USDC for 47.5 CREDITS");
@@ -420,6 +422,7 @@ mod tests {
         };
         view.wants.push(WantView {
             id: 1,
+            rev: 0,
             give: "nep141:usdc".into(),
             remaining: 10_000_000,
             take: "nep141:credits".into(),

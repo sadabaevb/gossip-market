@@ -5,6 +5,8 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
+use chrono::{DateTime, Utc};
+use intents::nonce::{self, Salt};
 use intents::{Keypair, TokenId};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -47,6 +49,16 @@ pub enum NonceKind {
     Versioned,
     /// 32 random bytes: accepted today, announced to be switched off.
     Plain,
+}
+
+impl NonceKind {
+    /// A fresh nonce of this kind, for something signed to expire at `deadline`.
+    pub fn nonce(self, salt: Salt, deadline: DateTime<Utc>) -> [u8; 32] {
+        match self {
+            NonceKind::Versioned => nonce::versioned(salt, deadline),
+            NonceKind::Plain => nonce::plain(),
+        }
+    }
 }
 
 #[derive(Deserialize, Clone, Debug)]

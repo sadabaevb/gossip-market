@@ -1,30 +1,15 @@
 //! Whole markets in one process: a devnet verifier and real nodes over libp2p on localhost, as in
 //! the simulation, but with the things that go wrong. Each test is a way a trade can fail to
 //! happen and what the nodes that kept their word are left with.
-use std::collections::BTreeMap;
 use std::time::Duration;
 
 use chain::Devnet;
 use intents::Ledger;
-use tokio::net::TcpListener;
 use tokio::time::{sleep, timeout};
 
-use crate::config::{devnet_key, NodeConfig, Timings, TokenConfig, Tokens, WantConfig};
+use crate::config::{devnet_key, NodeConfig, Timings, Tokens, WantConfig};
 use crate::node::{self, Closed, Command, Conduct, Handle, View};
-
-const VERIFIER: &str = "intents.devnet";
-
-fn token_table() -> BTreeMap<String, TokenConfig> {
-    let token = |id: &str, decimals| TokenConfig {
-        id: format!("nep141:{id}.devnet"),
-        decimals,
-    };
-    BTreeMap::from([
-        ("USDC".into(), token("usdc", 6)),
-        ("CREDITS".into(), token("credits", 3)),
-        ("DATA".into(), token("data", 3)),
-    ])
-}
+use crate::sim::{self, serve_devnet, token_table, VERIFIER};
 
 struct Market {
     devnet: Devnet,
@@ -42,10 +27,7 @@ impl Market {
             let (token, units) = tokens.parse(holds).unwrap();
             ledger.deposit(&devnet_key(name).account_id(), &token, units);
         }
-        let devnet = Devnet::new(ledger);
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let rpc = format!("http://{}", listener.local_addr().unwrap());
-        tokio::spawn(devnet.clone().serve(listener));
+        let (devnet, rpc) = serve_devnet(ledger).await.unwrap();
         Self {
             devnet,
             rpc,
@@ -56,18 +38,7 @@ impl Market {
 
     /// An agent's config against this market's verifier, with no wants and nobody to dial.
     fn config(&self, name: &str) -> NodeConfig {
-        NodeConfig {
-            name: name.into(),
-            key: format!("devnet:{name}"),
-            listen: "/ip4/127.0.0.1/tcp/0".into(),
-            bootstrap: Vec::new(),
-            mdns: false,
-            rpc: self.rpc.clone(),
-            verifier: VERIFIER.into(),
-            nonce: Default::default(),
-            tokens: token_table(),
-            wants: Vec::new(),
-        }
+        sim::config(name, &self.rpc, Vec::new(), Vec::new())
     }
 
     /// Starts an agent with these wants, dialing whoever joined first.
@@ -347,8 +318,8 @@ async fn a_withdraw_takes_what_was_asked_and_is_dry_run_before_it_is_sent() {
 
     let some = crate::withdraw::withdraw(&alice, "USDC", Some("20"), to).await.unwrap();
     assert_eq!(
-        (some.amount, some.before, some.after),
-        (20_000_000, 50_000_000, 30_000_000)
+        (some.amount, some.before, some.after.clone()),
+        (20_000_000, 50_000_000, Ok(30_000_000))
     );
     assert_eq!(market.balance("alice", "USDC"), 30_000_000);
     assert!(some.report(&market.tokens)[3].contains("on its way to alice.near"));
@@ -369,7 +340,7 @@ async fn a_withdraw_takes_what_was_asked_and_is_dry_run_before_it_is_sent() {
     assert_eq!(market.balance("alice", "USDC"), 30_000_000);
 
     let rest = crate::withdraw::withdraw(&alice, "USDC", None, to).await.unwrap();
-    assert_eq!((rest.amount, rest.after), (30_000_000, 0));
+    assert_eq!((rest.amount, rest.after.clone()), (30_000_000, Ok(0)));
     // The same check as above, seen to catch a transaction when there is one.
     assert!(sent.try_recv().is_ok());
 
@@ -396,4 +367,61 @@ async fn the_preflight_gets_the_answers_it_expects() {
             probe.what
         );
     }
+}
+
+// Thirty agents whose wants overlap, so that rings compete for them, three of whom quit partway,
+// must clear their market: no ring left among the live agents, every transaction and balance as
+// it should be, no live want left locked. Before rings were rested until their makers were free,
+// and before nodes proposed only the rings that come first for their wants, a market this size
+// went round one ring of four until the end; with either, it clears. What needs each of them, and
+// waiting out tries a node was asked into, is a hundred: `gossipmarket sim --agents 100`.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_crowded_market_clears() {
+    crate::crowd::run(30, 1).await.unwrap();
+}
+
+// Only a ring's makers propose it. If a stranger's proposal were taken up, anyone who hears the
+// gossip could keep a ring's makers holding off proposing it themselves, by proposing it to them
+// every so often.
+#[tokio::test]
+async fn a_proposal_from_outside_the_ring_is_turned_away() {
+    // Carol never answers, so the ring stays open and the stranger keeps proposing it.
+    let mut market = ring_of_three(Conduct::Honest, Conduct::IgnoresProposals).await;
+    market.join("dave", &[], Conduct::ProposesOthersRings).await;
+    market
+        .until("alice and bob turn dave away", 20, |m| {
+            ["alice", "bob"]
+                .iter()
+                .all(|name| m.log(name).contains("the proposer is not in the ring"))
+        })
+        .await;
+}
+
+// A node proposes only rings it can pay for, and of those the ones that come first. Choosing first
+// and checking the balance after, a ring too big for what the node holds hid every ring through
+// the same want, and none of them settled.
+#[tokio::test]
+async fn a_ring_a_maker_cannot_pay_for_does_not_hide_one_it_can() {
+    let mut market = Market::open(&[("alice", "6 USDC"), ("bob", "500 CREDITS"), ("carol", "500 CREDITS")]).await;
+    // More than Alice holds: a ring with Bob takes all 10, one with Carol only 4.
+    market
+        .join("alice", &[("10 USDC", "95 CREDITS")], Conduct::Honest)
+        .await;
+    market.join("bob", &[("100 CREDITS", "10 USDC")], Conduct::Honest).await;
+    market.join("carol", &[("40 CREDITS", "4 USDC")], Conduct::Honest).await;
+    market
+        .until("alice hears both wants", 20, |m| m.view("alice").book.len() == 3)
+        .await;
+    // Otherwise the ring with Carol comes first anyway, and this proves nothing.
+    let first = market::find_rings(&market.view("alice").book, 100).remove(0);
+    let bob = devnet_key("bob").account_id();
+    assert!(first.leg_of(&bob).is_some(), "the ring with Bob comes first: {first:?}");
+
+    market
+        .until("alice and carol settle", 30, |m| {
+            m.settled("alice") == 1 && m.settled("carol") == 1
+        })
+        .await;
+    assert_eq!(market.balance("carol", "CREDITS"), 460_000, "carol gave her 40 credits");
+    assert_eq!(market.balance("bob", "CREDITS"), 500_000, "bob gave nothing");
 }

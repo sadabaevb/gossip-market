@@ -99,6 +99,8 @@ mod tests {
         assert_eq!(FtWithdraw::from_intent(&intent), Some(withdraw));
     }
 
+    // The ledger models a plain withdraw of a NEP-141 token and nothing else. Reading more, the
+    // devnet would settle withdraws as if they took only `amount`, which the contract does not.
     #[test]
     fn only_a_plain_withdraw_of_a_fungible_token_is_read() {
         assert_eq!(FtWithdraw::new("nep171:nft.near:1", "me.near", 1), None);

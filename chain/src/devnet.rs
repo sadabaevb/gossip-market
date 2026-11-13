@@ -23,6 +23,15 @@ use tokio::sync::broadcast;
 use crate::rpc::hash_text;
 use crate::tx::{self, Received};
 
+/// A transaction the devnet was sent.
+#[derive(Clone, Debug)]
+pub struct Sent {
+    pub hash: String,
+    pub signer: String,
+    /// Why it did not settle, as the devnet answered; `None` if it settled.
+    pub failure: Option<String>,
+}
+
 #[derive(Clone)]
 pub struct Devnet {
     inner: Arc<Mutex<Inner>>,
@@ -66,6 +75,23 @@ impl Devnet {
     /// One line per transaction, for whoever runs the devnet to watch.
     pub fn events(&self) -> broadcast::Receiver<String> {
         self.events.subscribe()
+    }
+
+    /// Every transaction sent so far, in no particular order: for a simulation to read each one
+    /// back and check it, rather than rely on what the agents say they sent.
+    pub fn transactions(&self) -> Vec<Sent> {
+        self.lock()
+            .transactions
+            .values()
+            .map(|outcome| {
+                let field = |name: &str| outcome["transaction"][name].as_str().unwrap_or_default().to_owned();
+                Sent {
+                    hash: field("hash"),
+                    signer: field("signer_id"),
+                    failure: outcome["status"].get("Failure").map(Value::to_string),
+                }
+            })
+            .collect()
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {

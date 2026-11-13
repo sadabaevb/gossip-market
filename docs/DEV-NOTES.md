@@ -55,6 +55,87 @@ Read-only, through a public RPC node, at block 224190010:
 The encoding in `chain/src/tx.rs` was pinned to a vector produced by near-api-js 4.0.4 before
 this; these are the first transactions from it to run on mainnet.
 
+## A hundred agents, 13 November 2026
+
+`gossipmarket sim --agents 100` runs a hundred nodes in one process against the devnet, over five
+tokens everyone prices alike, so that almost any cycle of wants closes and rings compete for
+every want. Ten agents are set to quit partway. Until then nothing had run with more than three
+agents. The runs found five problems:
+
+- **A ring of four went round for ever.** A try that met one busy maker fell through, but the
+  makers who had signed it were held until its deadline. Its proposer tried again two seconds
+  later and met them; the makers who signed that try were held past the first, and they were
+  never all free at once. A proposer now rests a ring from the deadline of the try that fell
+  through.
+- **The market ground to a halt.** Every node proposed every ring through its wants, so proposers
+  kept locking one want into rings that could not all settle, and each failed try held its
+  signers until its deadline. 21 rings settled in the first 15 seconds, 6 between 30 and 45, and
+  then hardly any. A node now proposes only the rings that come first for each of their wants
+  (`first_rings_of`): two such rings never share a want, and the first ring of the book is always
+  one of them.
+- **The makers of one ring took turns proposing it out of step.** Each try met the makers still
+  held by the last. A maker asked to sign a try now waits out its deadline before proposing the
+  ring itself.
+- **Most of the work was Kademlia.** A profile of a run spent most of its time in DHT queries: a
+  node walked the DHT on every new connection, about 90 per node here. It now walks once, on its
+  first.
+
+- **The last rings of four were never proposed.** A ring had to be the first found from every
+  one of its wants. Where every cycle of four closes, the search from one want runs out of steps
+  before it reaches rings that the search from another want finds; then no ring came first for
+  all its wants, and nobody proposed anything. One run stopped for good like that: rings of four
+  open, no want locked, and not a line about the first of them from any of its makers. Another,
+  under load, ended the same way. A ring now qualifies when nothing the search finds through its
+  wants comes before it, so the smallest ring any search finds always does. `market` has a book
+  of 32 wants on which the old rule proposes nothing.
+
+A ring that failed because a maker was busy also stopped stepping aside for the rings it comes
+before: it is alive, and the other makers still put it first. With that, seed 1's last ring
+settled at 82 seconds instead of 149, on a build before the last fix.
+
+A review of the code afterwards found four more, fixed the same day:
+
+- **A stranger could keep a ring from being proposed.** A maker asked to sign a try held off
+  proposing the ring whoever had asked, and before checking the deadline. Anyone could propose a
+  ring to its makers every so often, with a deadline nobody would sign, and none of them would
+  propose it. A maker now counts only proposals from the ring's own makers, with a deadline it
+  could sign. `node/src/tests.rs` has a peer that proposes rings it is not in.
+- **A ring a node could not pay for hid the ones it could.** A node chose the first ring through
+  each of its wants, then checked its balance. A ring too big for it left the want with nothing
+  proposed, though a smaller ring through it would have settled. Rings it cannot pay for are now
+  left out before the choice.
+- **One want could crowd out the others.** A node searched from all its wants at once, and the
+  search keeps 64 rings. A want in more rings of two than that filled it, and the rings through
+  the node's other wants were never found. It now searches from each want on its own.
+- **A fifth to a third of the planted rings could never close.** The fee on a token with no decimals, GPU
+  here, is at least one whole unit, worth more than the margin a want was priced with. In seeds 1
+  to 5, 8 to 13 of the 42 planted rings could not close. Wants now ask for what is left after the
+  fee, every planted ring is checked to close before the agents start, and a run in which nothing
+  settled fails. Before, a search that found nothing would have left nothing open either, and
+  the run would have passed.
+
+With all of it, on an Apple M4 Max, one run at a time:
+
+| Seed | Rings settled | Of two, three, four | Last ring after the last agent started | Tries that fell through |
+|---|---|---|---|---|
+| 1 | 78 | 60, 15, 3 | 59 s | 79 of 162 |
+| 2 | 61 | 59, 2, 0 | 16 s | 64 of 129 |
+| 3 | 70 | 62, 8, 0 | 37 s | 81 of 155 |
+| 4 | 79 | 46, 33, 0 | 63 s | 73 of 157 |
+| 5 | 73 | 64, 8, 1 | 38 s | 69 of 143 |
+
+Each passed every check: something settled, no ring left among the live agents' open wants and
+none locked, every transaction read back and checked, every balance what the transactions say,
+every live maker of a settled ring aware of it, and every bundle that had gone out to a live maker
+settled. In every run the proposer sent each ring itself; no maker had to. Each run used five to
+seven cores on average.
+
+Two runs at once fail: see the known gaps. One earlier run, under that load, ended with a ring
+whose every signed leg a live maker held and that no transaction was sent for. Its log was not
+kept, and it has not happened since. The check now counts a proposer's bundle only once it has
+passed the dry run and gone out (a bundle the verifier refused rightly never settles), and
+prints what the holder said about the ring if it happens again.
+
 ## Decisions
 
 - **Rust workspace, five crates.** `intents` is pure and has no async, so the rules can be tested
@@ -93,7 +174,41 @@ this; these are the first transactions from it to run on mainnet.
 - No command to send an agent's NEAR for gas back off its account.
 - No NAT traversal: nodes need a reachable address or a shared local network.
 - No language model in the loop: wants come from a config file or standard input.
-- The ring search is bounded (20,000 steps per starting want, 64 rings) rather than clever. It is
-  enough for hundreds of wants, not for a busy book.
+- The ring search is bounded at 20,000 steps per starting want and ring length, so in a book
+  crowded enough for the steps to run out, a ring of four can be missed. A node searches only from
+  its own wants, at most 16. Measured on an Apple M4 Max in release, 13 November 2026, with a full
+  book of 10,000 wants, for `first_rings_of`, which a node runs (`rings_of` alone is a little
+  faster):
+  - Wants that chain but never close, with one ring of three hidden among them: a node finds the
+    ring in about 2 ms per look.
+  - Every opposite pair of wants closes: 1.4 to 1.5 ms per look.
+  - Before, every node searched the whole book. That took 1.2 s per look, and it missed the hidden
+    ring in any book of 100 wants or more.
+  - `find_rings` searches from every want. It is for tests and checks, and takes seconds on a full
+    book.
+- Under contention, a try that falls through still holds the makers who signed it until its
+  deadline: 30 seconds with the default timings, 8 in the simulations. In the hundred-agent runs
+  close to half of all tries fell through, mostly on a want committed to another ring or to an
+  earlier try of the same one, and the last rings took up to 63 seconds to settle. A first round
+  that reserves wants without signing anything would let a failed try release them at once;
+  nothing does that yet.
+- A maker waits `(rank + 1) × submit stagger` after it receives a bundle before submitting it
+  itself, and does not once the deadline has passed. With the simulations' timings (8 seconds
+  ahead, 2 seconds a rank) the last maker of a ring of four never gets to; with the defaults
+  (30 and 6) it gets to only if the bundle came within 6 seconds of the proposal.
+- In a book crowded enough to exhaust the ring search, two rings that each come first for their
+  wants can share one, and then one of them falls through on it.
+- A node dials from a fresh local port only when it dials a peer itself. When a request goes to
+  a peer it is not connected to, libp2p dials from the listening port, which fails if the two
+  nodes dial each other at the same moment. A node stops dialing for itself at 64 peers, which
+  the hundred-agent runs reach. A few tries in each run fall through on "Failed to dial", which
+  may be this.
+- A node copies its whole book for its screen whenever a want is announced again, even unchanged.
+  At the book's limit of 10,000 wants that is more than a node can keep up with, by an estimate,
+  not a measurement.
+- A hundred agents in one process keep five to eight cores busy. They hold about 6,500 loopback
+  connections, and leave about 9,300 sockets in TIME_WAIT for 30 seconds when they exit, against
+  16,384 ephemeral ports on macOS. Two hundred-agent runs at once, or one started straight after
+  another, run out of ports: dials fail, and the run fails or does not clear.
 - `proc-macro-error2`, a transitive dependency, prints a future-incompatibility note on build.
   It is harmless today.
