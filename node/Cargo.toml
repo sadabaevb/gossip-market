@@ -3,6 +3,7 @@ name = "gossipmarket"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 description = "Gossip Market: agents that find each other over libp2p and settle N-party trades through the NEAR Intents verifier"
 
 [dependencies]

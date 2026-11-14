@@ -162,6 +162,8 @@ impl Verifier {
         let seen = access["nonce"]
             .as_u64()
             .ok_or_else(|| unexpected("access key", &access))?;
+        // `fetch_update` has a newer name on the newest compilers. The old one builds on all of them.
+        #[allow(deprecated)]
         let nonce = self
             .last_nonce
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |last| Some(last.max(seen) + 1))

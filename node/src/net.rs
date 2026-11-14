@@ -21,14 +21,22 @@ const KAD_PROTOCOL: StreamProtocol = StreamProtocol::new("/gossipmarket/kad/1");
 const SETTLE_PROTOCOL: StreamProtocol = StreamProtocol::new("/gossipmarket/settle/1");
 const IDENTIFY_PROTOCOL: &str = "/gossipmarket/1";
 
-#[derive(NetworkBehaviour)]
-pub struct Behaviour {
-    pub gossipsub: gossipsub::Behaviour,
-    pub mdns: Toggle<mdns::tokio::Behaviour>,
-    pub kad: kad::Behaviour<kad::store::MemoryStore>,
-    pub identify: identify::Behaviour,
-    pub settle: request_response::json::Behaviour<Request, Response>,
+// libp2p's derive expands to a call that newer compilers report as unreachable. The code is
+// theirs: the lint is off for what the derive writes, in a module of its own, and nowhere else.
+mod behaviour {
+    #![allow(unreachable_code)]
+    use super::*;
+
+    #[derive(NetworkBehaviour)]
+    pub struct Behaviour {
+        pub gossipsub: gossipsub::Behaviour,
+        pub mdns: Toggle<mdns::tokio::Behaviour>,
+        pub kad: kad::Behaviour<kad::store::MemoryStore>,
+        pub identify: identify::Behaviour,
+        pub settle: request_response::json::Behaviour<Request, Response>,
+    }
 }
+pub use behaviour::{Behaviour, BehaviourEvent};
 
 /// What one node asks another directly while a ring is being settled.
 #[derive(Serialize, Deserialize, Clone, Debug)]

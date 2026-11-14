@@ -3,6 +3,7 @@ name = "conformance"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 publish = false
 description = "Gossip Market: our bundles, run through the verifier's own engine"
 

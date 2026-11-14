@@ -3,6 +3,7 @@ name = "chain"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 description = "Gossip Market: the verifier over NEAR JSON-RPC, and a local devnet that answers the same calls"
 
 [dependencies]

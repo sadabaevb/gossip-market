@@ -3,6 +3,7 @@ name = "market"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 description = "Gossip Market: signed wants, the order book every node rebuilds from gossip, and the ring finder"
 
 [dependencies]
