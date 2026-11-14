@@ -4,3 +4,7 @@
 *.key
 .env
 .DS_Store
+
+# What the README's background example writes beside the configs.
+/*.log
+/gossip.pids

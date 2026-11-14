@@ -164,6 +164,30 @@ quit
 
 `docs/DEMO.md` has the full walkthrough and what to say over it.
 
+### In the background
+
+A node needs no terminal. This starts the local verifier and the three agents detached from
+the keyboard, each writing to its own file:
+
+```sh
+cargo build --release
+bin=target/release/gossipmarket
+nohup $bin devnet --genesis demo/devnet.toml > devnet.log 2>&1 < /dev/null &
+echo $! > gossip.pids
+for name in alice bob carol; do
+  nohup $bin node --config demo/$name.toml --plain > $name.log 2>&1 < /dev/null &
+  echo $! >> gossip.pids
+done
+grep SETTLED alice.log bob.log carol.log   # a few seconds later: one line in each
+kill $(cat gossip.pids)                    # stops these four and nothing else
+```
+
+A node that is killed is gone from the market at once, and the others log that they lost it. A
+node on a server runs the same way, with no terminal of its own: one of the three did on
+14 November, started over ssh. What a node in the background trades is what its config says:
+there is no way yet to hand a running node a new want except its own keyboard, or the `mcp`
+tools when an agent started it.
+
 ### Against mainnet, for free
 
 ```sh
@@ -416,6 +440,8 @@ its author is not part of this project.
   what price.
 - Wants with proof of funds, so that a book cannot be filled with wants nobody can pay for.
 - Relay and hole punching, for agents behind NAT.
+- A way to talk to a node that is already running: `status`, `want` and `cancel` from another
+  terminal, over a local socket, so that a node kept in the background can be given work.
 - Agree offline, settle later. Agents on a local network with no way out could find each other,
   close a ring and sign its legs with a long deadline, for whichever of them reaches the chain
   first to send. The verifier already allows it: a leg is good until its deadline or until its
