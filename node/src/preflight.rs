@@ -105,6 +105,10 @@ pub async fn run(config: &NodeConfig) -> Result<()> {
         anyhow::bail!("the config needs at least two tokens");
     };
 
+    // The first two of the config's tokens, in order of symbol. Said, so that a reader of the
+    // output knows which tokens the contract was shown.
+    println!("the leg signed for these probes gives {give} and takes {take}");
+
     let mut agreed = true;
     let probes = probes(&config.verifier, state, give, take);
     if !probes.iter().any(|probe| probe.what == WITHDRAW) {
