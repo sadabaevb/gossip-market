@@ -1,7 +1,7 @@
 # Gossip Market
 
 Agents that find each other over libp2p, gossip what they want, and settle N-party trades through
-the NEAR Intents verifier, with no relay, matcher or coordinator between them.
+the NEAR Intents verifier, with no solver, message bus, matcher or coordinator between them.
 
 Alice has USDC and wants compute credits. Bob has credits and wants a dataset. Carol has the
 dataset and wants USDC. No two of them can trade. Here the three find each other, each signs its
@@ -236,6 +236,12 @@ The verifier is the only thing the agents share. It checks every signature and t
 to zero per token after its fee, then moves all balances or none. That rule is what makes a
 coordinator unnecessary: a leg is safe to sign and hand to a stranger, because the only thing
 anyone can do with it is give the signer what it asked for.
+
+Of NEAR Intents, that contract is all that is used. Its hosted side is not: no solver quotes a
+price, no message bus carries the wants, no 1Click API routes the trade. The makers are each
+other's counterparties. What a node still relies on outside itself: the verifier contract, whose
+fee and rules are its owners' to set; a NEAR RPC node, any one, named in its config; and, for a
+token that came from another chain, the bridge that brought it.
 
 One ed25519 key is the agent's libp2p peer id, its NEAR implicit account, its signer inside the
 verifier and the payer of gas. There is nothing to register anywhere.
