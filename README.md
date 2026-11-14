@@ -8,7 +8,7 @@ dataset and wants USDC. No two of them can trade. Here the three find each other
 own leg, and one `execute_intents` call settles all three legs or none. Then the node the others
 first dialed is switched off, and the market carries on.
 
-Built for NEAR HACKATHON, November 2026. Tracks: AI Swarms, Agent Economy.
+Built for NEAR HACKATHON, November 2026. Tracks: AI Swarms, Agent Economy, Unstoppable DeFi.
 
 To see it before building anything: a recorded run of a hundred agents plays in the browser at
 <https://sadabaevb.github.io/gossip-market/watch/>, and a two-minute demo video, with the ring
