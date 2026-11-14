@@ -137,6 +137,28 @@ async fn events(State(board): State<Board>, Segment(after): Segment<usize>) -> i
     Json(Value::Array(inner.events[from..].to_vec()))
 }
 
+/// One request over a plain socket, for the tests of the pages: the node has no HTTP client of its
+/// own to borrow.
+#[cfg(test)]
+pub(crate) async fn ask(method: &str, url: &str, body: Option<&Value>) -> Value {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let rest = url.strip_prefix("http://").unwrap();
+    let (host, path) = rest.split_once('/').unwrap();
+    let body = body.map(Value::to_string).unwrap_or_default();
+    let mut stream = tokio::net::TcpStream::connect(host).await.unwrap();
+    let request = format!(
+        "{method} /{path} HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
+         Connection: close\r\n\r\n{body}",
+        body.len()
+    );
+    stream.write_all(request.as_bytes()).await.unwrap();
+    let mut answer = String::new();
+    stream.read_to_string(&mut answer).await.unwrap();
+    let (head, body) = answer.split_once("\r\n\r\n").unwrap();
+    assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+    serde_json::from_str(body).unwrap_or_else(|e| panic!("{e}: {body}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -153,7 +175,7 @@ mod tests {
 
         let get = |path: &str| {
             let url = format!("{url}{path}");
-            async move { reqwest_json(&url).await }
+            async move { ask("GET", &url, None).await }
         };
         assert_eq!(get("/market").await["agents"][0]["name"], "alice");
         let all = get("/events/0").await;
@@ -165,20 +187,5 @@ mod tests {
         // Asking is what tells the board somebody is there.
         assert!(board.watched());
         assert_eq!(board.recording()["events"].as_array().unwrap().len(), 2);
-    }
-
-    /// One GET over a plain socket: the node has no HTTP client of its own to borrow.
-    async fn reqwest_json(url: &str) -> Value {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        let rest = url.strip_prefix("http://").unwrap();
-        let (host, path) = rest.split_once('/').unwrap();
-        let mut stream = tokio::net::TcpStream::connect(host).await.unwrap();
-        let request = format!("GET /{path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
-        stream.write_all(request.as_bytes()).await.unwrap();
-        let mut answer = String::new();
-        stream.read_to_string(&mut answer).await.unwrap();
-        let (head, body) = answer.split_once("\r\n\r\n").unwrap();
-        assert!(head.starts_with("HTTP/1.1 200"), "{head}");
-        serde_json::from_str(body).unwrap_or_else(|e| panic!("{e}: {body}"))
     }
 }

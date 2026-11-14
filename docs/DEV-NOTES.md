@@ -256,6 +256,25 @@ answer it says that the transaction may only be old and names an archival node. 
 the ordinary endpoint: a node reads the present, not the past. The same day `preflight` was run
 again against `intents.near` and passed all five probes.
 
+## A seat for a person, 14 November 2026
+
+`gossipmarket seat` serves `docs/seat/index.html` on localhost: the rehearsal of `mcp` with a
+form and buttons where the AI agent would be. A button posts a tool's name and arguments, the
+node runs the tool as it would for an agent, and the page shows the answer as text. What the page
+draws, the makers and the last ring between them, it reads from the node's view, not from that
+text, and without waiting for a tool that is running: `wait_for_settlement` keeps the seat for
+up to 20 seconds.
+
+It serves the rehearsal and nothing else. The page has no login, so a real node behind it would
+trade for whoever on the machine asked. A tool is run only for a request that says its body is
+JSON, which a page from another site cannot send here without asking first.
+
+What was checked: one test that closes a ring of three and verifies it through the page's own
+requests; the page driven in headless Chrome through placing the suggested want, the ring and the
+verification, with nothing in the browser's console; and by hand over the same requests, a want
+that asks too much (nothing settles in 20 seconds), cancelling it, and a fair one after it.
+Nothing checks what the page draws against what it is told, and no other browser was tried.
+
 ## Decisions
 
 - **Rust workspace, five crates.** `intents` is pure and has no async, so the rules can be tested

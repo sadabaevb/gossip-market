@@ -19,10 +19,11 @@ use chain::Verifier;
 use intents::{AccountId, Ledger};
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::sync::watch;
 use tokio::time::sleep;
 
 use crate::config::{devnet_key, pips, NodeConfig, Timings, Tokens, WantConfig};
-use crate::node::{self, Closed, Command, Handle, Settlement, View};
+use crate::node::{self, Closed, Command, Handle, Settlement, View, WantView};
 use crate::{sim, verify};
 
 /// The revisions answered request by request, and the ones answered after an `initialize`.
@@ -59,6 +60,98 @@ pub struct Market {
     others: Vec<Handle>,
     /// The node has read the verifier, and in a rehearsal has heard the others' wants.
     ready: bool,
+}
+
+/// A seat as somebody beside it sees it: the node's view as it changes, and the names to show
+/// amounts and makers by. A tool can keep the seat itself for as long as it waits; a page that
+/// draws the market must not wait with it.
+#[derive(Clone)]
+pub struct Onlooker {
+    view: watch::Receiver<View>,
+    tokens: Tokens,
+    names: BTreeMap<AccountId, String>,
+}
+
+impl Onlooker {
+    /// What a page draws: amounts written out and makers named, as the tools say them.
+    pub fn state(&self) -> Value {
+        let view = self.view.borrow().clone();
+        let name = |account: &str| match self.names.get(account) {
+            Some(name) => name.clone(),
+            None => format!("{}…", node::short(account)),
+        };
+        let wants: Vec<Value> = view
+            .wants
+            .iter()
+            .map(|want| {
+                json!({
+                    "id": want.id,
+                    "give": self.tokens.show(&want.give, want.remaining),
+                    "take": self.tokens.show(&want.take, want.take_for_remaining),
+                    "standing": standing(want),
+                })
+            })
+            .collect();
+        let mut heard = view.book.clone();
+        heard.sort_by(|a, b| (&a.maker, a.id).cmp(&(&b.maker, b.id)));
+        let book: Vec<Value> = heard
+            .iter()
+            .map(|want| {
+                json!({
+                    "who": name(&want.maker),
+                    "mine": want.maker == view.account,
+                    "id": want.id,
+                    "give": self.tokens.show(&want.give, want.give_amount),
+                    "take": self.tokens.show(&want.take, want.take_amount),
+                })
+            })
+            .collect();
+        let settlements: Vec<Value> = view
+            .settlements
+            .iter()
+            .map(|settled| {
+                let legs: Vec<Value> = settled
+                    .ring
+                    .legs
+                    .iter()
+                    .map(|leg| {
+                        json!({
+                            "who": name(&leg.maker),
+                            "gave": self.tokens.show(&leg.give, leg.give_amount),
+                            "got": self.tokens.show(&leg.take, leg.take_amount),
+                        })
+                    })
+                    .collect();
+                json!({ "ring": settled.ring.id(), "mine": settled.mine, "tx": settled.tx, "legs": legs })
+            })
+            .collect();
+        let holding: Vec<String> = view
+            .balances
+            .iter()
+            .map(|(token, units)| self.tokens.show(token, *units))
+            .collect();
+        json!({
+            "me": name(&view.account),
+            "account": view.account,
+            "verifier": view.verifier,
+            "fee": view.fee_pips.map(pips),
+            "peers": view.peers.len(),
+            "holding": holding,
+            "wants": wants,
+            "book": book,
+            "settlements": settlements,
+        })
+    }
+}
+
+/// Where a want of this node's stands, in a word.
+fn standing(want: &WantView) -> &'static str {
+    match (&want.closed, &want.locked) {
+        (Some(Closed::Filled), _) => "filled",
+        (Some(Closed::Cancelled), _) => "cancelled",
+        (None, Some(_)) => "committed",
+        (None, None) => "open",
+    }
 }
 
 /// Serves the market on standard input and output until the client closes the input.
@@ -141,6 +234,15 @@ impl Market {
             others,
             ready: false,
         })
+    }
+
+    /// The seat for somebody who watches it without holding it.
+    pub fn onlooker(&self) -> Onlooker {
+        Onlooker {
+            view: self.handle.view.clone(),
+            tokens: self.tokens.clone(),
+            names: self.names.clone(),
+        }
     }
 
     /// Stops the node, and the rehearsal's others with it.
@@ -302,7 +404,7 @@ impl Market {
 
     /// Runs one tool. `Err` is a failure the agent can act on: a token it misspelt, a want the
     /// node turned down.
-    async fn call(&mut self, name: &str, args: &Value) -> Result<String, String> {
+    pub async fn call(&mut self, name: &str, args: &Value) -> Result<String, String> {
         self.settle_in().await;
         match name {
             "market_status" => Ok(self.status()),
@@ -366,11 +468,11 @@ impl Market {
             false => lines.push("Your wants:".into()),
         }
         for want in &view.wants {
-            let state = match (&want.closed, &want.locked) {
-                (Some(Closed::Filled), _) => "filled".to_owned(),
-                (Some(Closed::Cancelled), _) => "cancelled".to_owned(),
-                (None, Some(ring)) => format!("committed to ring {ring}, waiting for it to settle or expire"),
-                (None, None) => "open".to_owned(),
+            let state = match &want.locked {
+                Some(ring) if want.closed.is_none() => {
+                    format!("committed to ring {ring}, waiting for it to settle or expire")
+                }
+                _ => standing(want).to_owned(),
             };
             lines.push(match want.closed {
                 Some(_) => format!("- #{}: {state}", want.id),

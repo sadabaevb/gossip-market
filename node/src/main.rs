@@ -8,6 +8,7 @@ mod mcp;
 mod net;
 mod node;
 mod preflight;
+mod seat;
 mod sim;
 #[cfg(test)]
 mod tests;
@@ -77,6 +78,12 @@ enum Run {
         /// The node to trade as, e.g. demo/mainnet/alice.toml. Left out: the rehearsal.
         #[arg(long)]
         config: Option<PathBuf>,
+    },
+    /// Serves a page on localhost where a person takes the agent's seat in the rehearsal of `mcp`:
+    /// the same tools, behind a form and buttons. Nothing to set up and nothing real at stake.
+    Seat {
+        #[arg(long, default_value_t = seat::PORT)]
+        port: u16,
     },
     /// Runs a local verifier that answers the NEAR JSON-RPC calls agents make, with the balances
     /// in a genesis file. For rehearsing without funds; not a chain.
@@ -212,6 +219,12 @@ async fn run(command: Run) -> Result<()> {
             Ok(())
         }
         Run::Mcp { config } => mcp::run(config).await,
+        Run::Seat { port } => {
+            let url = seat::open(port).await?;
+            println!("Take your seat at {url} . Ctrl-C ends it.");
+            tokio::signal::ctrl_c().await?;
+            Ok(())
+        }
         Run::Devnet { genesis, port } => devnet(genesis, port).await,
         Run::Keygen { out } => keygen(out),
         Run::Account { config } => account(config).await,

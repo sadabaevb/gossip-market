@@ -31,7 +31,7 @@ each one does. You should see, in order:
 Then the tests:
 
 ```sh
-cargo test                  # 81 tests, under half a minute after the first build
+cargo test                  # 82 tests, under half a minute after the first build
 cargo test -p conformance   # 7 tests against the verifier's own engine; fetches near/intents, takes a few minutes the first time
 ```
 
@@ -76,6 +76,24 @@ or so, and `SIMULATION PASSED` in green. The page stays up while it is open.
 Without building anything, open `docs/watch/index.html` in a browser: it plays back a run of a
 hundred agents recorded on 14 November 2026, 74 rings, 19 of them of three makers.
 `--record docs/watch/run.js` records another.
+
+### Take a seat yourself
+
+```sh
+cargo run --release -- seat
+```
+
+It prints an address on localhost. The page is the rehearsal of `mcp`, described next, with a
+person where the AI agent sits: you are Alice with 50 USDC, Bob gives credits for data and Carol
+data for USDC, so no two of the three can trade. Press "Place want" with the amounts it suggests.
+Within a few seconds three arrows close a ring between the three of you and you hold 103.039
+CREDITS; "Verify it against the verifier" reads the transaction back and ends with `VERIFIED`. The
+column on the right shows each call the page made and the node's answer, word for word as an AI
+agent reads them. Ask for 200 CREDITS instead and nothing settles: after 20 seconds the node says
+so, and the want can be cancelled.
+
+The seat is the rehearsal only. A page on localhost answers whoever on the machine asks, which is
+no way to hold a real account.
 
 ### Hand the market to an AI agent
 
@@ -218,7 +236,7 @@ verifier and the payer of gas. There is nothing to register anywhere.
 | `intents` | What the verifier reads: NEP-413 signed `token_diff` and `ft_withdraw` intents, nonces, the fee rounding, and the verifier's rules over balances in memory |
 | `chain` | The NEAR JSON-RPC calls a node makes, transaction encoding, and a local devnet that answers the same calls |
 | `market` | Signed wants, the book, and the ring search and sizing |
-| `node` | The `gossipmarket` binary: the agent, its screen, the simulation and the page that draws it, the tools for an AI agent (`mcp`), `preflight`, `verify` and `withdraw` |
+| `node` | The `gossipmarket` binary: the agent, its screen, the simulation and the page that draws it, the tools for an AI agent (`mcp`) and the page that puts a person in its seat (`seat`), `preflight`, `verify` and `withdraw` |
 | `conformance` | Runs the bundles this code signs through the verifier's own engine (`defuse-core`, pinned) and compares answers with ours, word for word |
 
 ## What was checked, and how
