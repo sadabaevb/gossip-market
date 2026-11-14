@@ -21,12 +21,15 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
-use chain::{Devnet, Verifier};
+use chain::{ChainError, Devnet, Verifier};
 use clap::{Parser, Subcommand};
 use intents::Keypair;
 use tokio::net::TcpListener;
 
 use config::{Genesis, NodeConfig, Timings};
+
+/// A mainnet RPC node that keeps every transaction, for `verify` to read an old settlement from.
+const ARCHIVAL: &str = "https://archival-rpc.mainnet.fastnear.com";
 
 #[derive(Parser)]
 #[command(name = "gossipmarket", version, about)]
@@ -110,6 +113,11 @@ enum Run {
         /// Any node's config: it says which RPC and verifier to ask, and how to show amounts.
         #[arg(long)]
         config: PathBuf,
+        /// Ask this endpoint instead of the config's. An ordinary RPC node forgets a transaction
+        /// after about two days; an archival one, such as https://archival-rpc.mainnet.fastnear.com,
+        /// keeps it.
+        #[arg(long)]
+        rpc: Option<String>,
     },
     /// Takes tokens out of the verifier to a NEAR account: the agent signs an `ft_withdraw`, the
     /// contract dry-runs it for free, and then the agent sends it and pays the gas. Stop the
@@ -208,10 +216,26 @@ async fn run(command: Run) -> Result<()> {
         Run::Keygen { out } => keygen(out),
         Run::Account { config } => account(config).await,
         Run::Preflight { config } => preflight::run(&NodeConfig::load(&config)?).await,
-        Run::Verify { tx, sender, config } => {
+        Run::Verify {
+            tx,
+            sender,
+            config,
+            rpc,
+        } => {
             let config = NodeConfig::load(&config)?;
-            let verifier = Verifier::new(config.rpc.clone(), config.verifier.clone());
-            let checked = verify::check(&verifier, &tx, &sender).await?;
+            let asked = rpc.unwrap_or_else(|| config.rpc.clone());
+            let verifier = Verifier::new(asked.clone(), config.verifier.clone());
+            let checked = match verify::check(&verifier, &tx, &sender).await {
+                // A node that has dropped the transaction answers with a timeout, which reads like
+                // a network fault: say what else it can be.
+                Err(error) if matches!(error.downcast_ref(), Some(ChainError::Unknown(_))) => {
+                    return Err(error.context(format!(
+                        "{asked} did not answer for this transaction. An ordinary RPC node forgets a transaction \
+                         after about two days; an archival one keeps it: --rpc {ARCHIVAL}"
+                    )));
+                }
+                checked => checked?,
+            };
             for line in checked.report(&config.tokens()) {
                 println!("{line}");
             }

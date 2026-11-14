@@ -241,6 +241,21 @@ playing back the recording that run made, with nothing in the browser's console 
 one test that the events of a thirty-agent run name real agents and end with the result. Nothing
 checks what the page draws against the events it is given.
 
+## Reading an old settlement back, 14 November 2026
+
+Two days after the ring on mainnet, the `verify` command in the README stopped working: the
+endpoint in the mainnet configs (`free.rpc.fastnear.com`) answered the `tx` call with
+`TIMEOUT_ERROR` and cause `NOT_OBSERVED` after thirty seconds, and so did
+`rpc.mainnet.fastnear.com`. An ordinary NEAR node keeps a transaction for about five epochs and
+then answers as if it had never seen it. `archival-rpc.mainnet.fastnear.com` and
+`archival-rpc.mainnet.near.org` both returned the transaction, and `verify` ended with `VERIFIED`
+against each.
+
+So `verify` takes `--rpc` to ask another endpoint than the config's, and when the chain gives no
+answer it says that the transaction may only be old and names an archival node. The configs keep
+the ordinary endpoint: a node reads the present, not the past. The same day `preflight` was run
+again against `intents.near` and passed all five probes.
+
 ## Decisions
 
 - **Rust workspace, five crates.** `intents` is pure and has no async, so the rules can be tested

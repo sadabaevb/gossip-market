@@ -152,8 +152,9 @@ start three nodes, and check the settlement with
 cargo run -- verify <tx hash> --sender <account> --config demo/mainnet/alice.toml
 ```
 
-which reads the transaction from a public RPC node and recomputes everything. What is left comes
-back out with
+which reads the transaction from a public RPC node and recomputes everything. An ordinary node
+forgets a transaction after about two days: for an older one add
+`--rpc https://archival-rpc.mainnet.fastnear.com`. What is left comes back out with
 
 ```sh
 cargo run -- withdraw USDC --to you.near --config demo/mainnet/alice.toml
@@ -241,12 +242,16 @@ verifier and the payer of gas. There is nothing to register anywhere.
 - **On mainnet, with funds.** On 12 November 2026 three agents on one machine settled a ring of
   three through `intents.near` in one `execute_intents`: 0.1 USDC, 0.03 wrapped NEAR and 0.1 USDT,
   each leg signed by its own maker, 19 Tgas burnt
-  ([`CX1a9fxurEHkKm5TTyAHUnjd6muqqcYy61mhpv9AY1k4`](https://nearblocks.io/txns/CX1a9fxurEHkKm5TTyAHUnjd6muqqcYy61mhpv9AY1k4)).
-  This reads it back and ends with `VERIFIED`:
+  ([`CX1a9fxurEHkKm5TTyAHUnjd6muqqcYy61mhpv9AY1k4`](https://nearblocks.io/txns/CX1a9fxurEHkKm5TTyAHUnjd6muqqcYy61mhpv9AY1k4);
+  [Pikespeak](https://pikespeak.ai/transaction-viewer/CX1a9fxurEHkKm5TTyAHUnjd6muqqcYy61mhpv9AY1k4)
+  lists it under "Intent" as three swaps, each intent by its own maker).
+  This reads it back from an archival node and ends with `VERIFIED` (run again on 14 November;
+  the endpoint in the config had dropped the transaction by then):
 
   ```sh
   cargo run -- verify CX1a9fxurEHkKm5TTyAHUnjd6muqqcYy61mhpv9AY1k4 \
-    --sender 6b19f425761ce66fa55fa235e0844fba46da0d63908723db7e68b98e6743e3cc --config demo/mainnet/alice.toml
+    --sender 6b19f425761ce66fa55fa235e0844fba46da0d63908723db7e68b98e6743e3cc \
+    --config demo/mainnet/alice.toml --rpc https://archival-rpc.mainnet.fastnear.com
   ```
 
   Then `withdraw` took 0.05 USDC from one agent back out of the verifier to an ordinary account

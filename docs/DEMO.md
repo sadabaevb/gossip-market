@@ -214,7 +214,9 @@ gm verify <tx hash> --sender <account that sent it> --config demo/mainnet/alice.
 ```
 
 It should end with `VERIFIED`. Put the hash and that command in the README, under "What was
-checked".
+checked". An ordinary RPC node forgets a transaction after about two days: write the command there
+with `--rpc https://archival-rpc.mainnet.fastnear.com`, so that it still works for whoever reads
+the README later.
 
 The prices in `demo/mainnet/*.toml` are placeholders chosen so that the ring closes. All three
 agents are yours, so the price only decides which of your accounts ends up with what.
