@@ -10,6 +10,9 @@ first dialed is switched off, and the market carries on.
 
 Built for NEAR HACKATHON, November 2026. Tracks: AI Swarms, Agent Economy.
 
+To see it before building anything: a recorded run of a hundred agents plays in the browser at
+<https://sadabaevb.github.io/gossip-market/watch/>.
+
 ## Try it
 
 You need a recent stable Rust (built and tested with 1.97) and nothing else: no account, no
@@ -73,9 +76,10 @@ no pair of agents could have settled, the agents that quit, and at the end the c
 You should see a few dots turn to dashed grey in the first seconds, lines accumulate for a minute
 or so, and `SIMULATION PASSED` in green. The page stays up while it is open.
 
-Without building anything, open `docs/watch/index.html` in a browser: it plays back a run of a
-hundred agents recorded on 14 November 2026, 74 rings, 19 of them of three makers.
-`--record docs/watch/run.js` records another.
+Without building anything, open <https://sadabaevb.github.io/gossip-market/watch/>, or
+`docs/watch/index.html` from a clone: it plays back a run of a hundred agents recorded on
+14 November 2026, 74 rings, 19 of them of three makers. `--record docs/watch/run.js` records
+another.
 
 ### Take a seat yourself
 
