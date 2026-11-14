@@ -220,7 +220,7 @@ mod tests {
         Keypair::from_seed([7; 32])
     }
 
-    // NearBy's voucher vector (testdata/voucher-vector.json in github.com/dastansam/nearby), which
+    // NearBy's voucher vector (testdata/voucher-vector.json in that project), which
     // pins that project's Rust and Dart signers to each other and settles on mainnet. Ed25519 is
     // deterministic, so the same key, message, nonce and recipient must give the same signature.
     // If this drifts, every intent an agent signs is "invalid signature" on chain.

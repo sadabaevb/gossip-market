@@ -15,8 +15,9 @@ To see it before building anything: a recorded run of a hundred agents plays in 
 
 ## Try it
 
-You need a recent stable Rust (built and tested with 1.97) and nothing else: no account, no
-funds, and no network once the crates are downloaded.
+You need a recent stable Rust (built with 1.97; everything here was run again with 1.100 on
+14 November 2026) and nothing else: no account, no funds, and no network once the crates are
+downloaded.
 
 ```sh
 cargo run -- sim
@@ -57,9 +58,11 @@ another market.
 On 14 November 2026, on an Apple M2 Pro doing other work at the time, seeds 1 to 5 each passed:
 62 to 79 rings settled, the last of them 48 to 73 seconds after the last agent started. Of the
 357 rings in those five runs, 70 had three or four makers: one trade in five that no pair of
-agents could have made. The run
-keeps four to five cores busy; with fewer it takes longer, and the market has ten minutes to
-clear. `sim --agents 30` is a smaller market of the same kind: two runs took 3 and 13 seconds.
+agents could have made. The same seed does not settle the same number twice: it fixes who wants
+what, not how the nodes' messages interleave, and seed 1 gave 74 to 81 rings over that day's
+runs. The run keeps four to five cores busy and about 3 GB of memory (5 GB at its peak, as macOS
+counts a process's footprint); with fewer cores it takes longer, and the market has ten minutes
+to clear. `sim --agents 30` is a smaller market of the same kind: two runs took 3 and 13 seconds.
 Run one at a time; two at once run out of local ports. `docs/DEV-NOTES.md` has the numbers, the
 earlier runs on an Apple M4 Max, and what the runs found and fixed.
 
@@ -69,7 +72,7 @@ earlier runs on an Apple M4 Max, and what the runs found and fixed.
 cargo run --release -- sim --agents 100 --web
 ```
 
-It prints an address on localhost and waits a few seconds for you to open it. The page shows the
+It prints an address on localhost and waits up to 15 seconds for you to open it. The page shows the
 hundred agents as dots in a circle. Each ring is drawn between its makers as it settles: blue for
 two makers, gold for three, pink for four. Beside them it counts the rings, the share of them that
 no pair of agents could have settled, the agents that quit, and at the end the checks of the run.
@@ -318,13 +321,40 @@ verifier and the payer of gas. There is nothing to register anywhere.
   ([`7TVBEDH72Rk3xM9UXAoeM5TkjoAjTdbEiWuQQSttwbn4`](https://pikespeak.ai/transaction-viewer/7TVBEDH72Rk3xM9UXAoeM5TkjoAjTdbEiWuQQSttwbn4),
   `VERIFIED`); the run was cut short and its log was not kept.
 
+The four rings and the withdraw, to check without an explorer. Every one was sent by the same
+account, Carol's, and this reads any of the rings back from the chain and ends with `VERIFIED`:
+
+```sh
+cargo run -- verify <transaction> \
+  --sender 6b19f425761ce66fa55fa235e0844fba46da0d63908723db7e68b98e6743e3cc \
+  --config demo/mainnet/alice.toml --rpc https://archival-rpc.mainnet.fastnear.com
+```
+
+| When, UTC | Where the three nodes ran | Transaction |
+|---|---|---|
+| 12 Nov, 17:59 | one machine | `CX1a9fxurEHkKm5TTyAHUnjd6muqqcYy61mhpv9AY1k4` |
+| 14 Nov, 12:05 | one machine | `GEeSFMnxE3bj86JXX9yMeyFTPV3FLhuZWnu9z4t45KVn` |
+| 14 Nov, 14:28 | a server and a laptop | `7TVBEDH72Rk3xM9UXAoeM5TkjoAjTdbEiWuQQSttwbn4` |
+| 14 Nov, 14:46 | a server and two laptops, three networks | `DKrtQ5gNv47kFXPZacPcaBnTqB3ZkLMzH5igaoB5tfDG` |
+
+`--sender` tells the RPC node where to look; `verify` prints the sender the transaction itself
+names. The withdraw is not a ring, so `verify` does not read it; the chain does:
+
+```sh
+curl -s https://archival-rpc.mainnet.fastnear.com -H 'content-type: application/json' -d '{
+  "jsonrpc":"2.0","id":1,"method":"tx","params":{
+    "tx_hash":"C9ediagwiPguKwYjdKZAbFbaTdLzrjXV7v81voU4QTna",
+    "sender_account_id":"6b19f425761ce66fa55fa235e0844fba46da0d63908723db7e68b98e6743e3cc",
+    "wait_until":"EXECUTED_OPTIMISTIC"}}'
+```
+
 ## What this does not claim
 
 - **No language model is bundled or called here.** A node holds wants and follows the protocol;
   what to want is decided outside it: by a person at the screen, by a program on
   `gossipmarket node --plain`, or by an AI agent through `gossipmarket mcp`, with whatever model
-  that agent runs on. This repo is the part an agent cannot improvise: finding counterparties with
-  no server and settling with nobody to trust.
+  that agent runs on. This repo is what sits under such an agent: finding counterparties with no
+  server, and settling with nobody to trust.
 - **It is not a better swap venue.** For liquid pairs, professional market makers behind the
   Intents solver relay quote tighter and faster. This is for trades the relay does not serve:
   agent to agent, long-tail assets, three or four parties with nobody holding inventory.
@@ -333,9 +363,10 @@ verifier and the payer of gas. There is nothing to register anywhere.
   in seconds, but there is no Sybil resistance and no reputation. A maker can announce a want it
   cannot pay for: the dry run refuses the ring, nothing is spent, and the others try again later.
 - **A signed leg is a free option until its deadline.** A proposer who collects signatures and
-  sits on them locks the other makers' wants for 30 seconds, and 10 more while each maker makes
-  sure nothing settled at the last moment. It cannot take anything, and a maker refuses deadlines
-  more than a minute ahead.
+  sits on them locks the other makers' wants until the deadline it chose, and 10 seconds more
+  while each maker makes sure nothing settled at the last moment. An honest node asks for 30
+  seconds; a maker refuses deadlines more than a minute ahead, so the most is about 70 seconds.
+  The proposer cannot take anything.
 - **A maker's "busy" is taken at its word.** A maker that declines a try because its want is
   committed elsewhere is asked again later, and the proposer does not step aside for another ring
   meanwhile. One that keeps saying so, in the ring that comes first for someone's want, keeps that
@@ -365,16 +396,19 @@ verifier and the payer of gas. There is nothing to register anywhere.
 ## How this was built
 
 Written during the hackathon by one person with an AI coding assistant (Claude), who directed and
-reviewed it. Two test vectors come from [NearBy](https://github.com/dastansam/nearby), another
+reviewed it. Two test vectors come from NearBy, another
 entry in this hackathon by a different author: the NEP-413 signature in `intents/src/nep413.rs`
 and the transaction encoding in `chain/src/tx.rs`. No code from the NEAR Intents repository is
 copied; `conformance` depends on it to test against.
 
-Libraries: libp2p, tokio, ratatui, axum (devnet only), reqwest, ed25519-dalek, clap.
+Libraries, all of them direct dependencies: libp2p, tokio, futures, axum (the devnet and the two
+pages), ratatui and crossterm (the screen), reqwest, ed25519-dalek, sha2, rand, serde, serde_json,
+toml, clap, chrono, regex, anyhow, base64, bs58, hex, primitive-types; and `defuse-core` from
+near/intents, in the conformance tests only.
 
 Other entries in this hackathon: the author of Gossip Market also builds
-[Ainek](https://github.com/sadabaevb/ainek) with a teammate. NearBy, the source of the two test
-vectors above, is that teammate's own entry; its author is not part of this project.
+[Ainek](https://github.com/sadabaevb/ainek) with a teammate. NearBy is that teammate's own entry;
+its author is not part of this project.
 
 ## Next
 

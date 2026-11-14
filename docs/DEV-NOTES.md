@@ -325,8 +325,9 @@ A ring is netted inside the verifier, so it can carry any token the verifier hol
 includes what its bridges bring from other chains: `eth.omft.near`, `btc.omft.near` and
 `sol.omft.near` answer `ft_metadata` as Ethereum, Bitcoin and Solana with 18, 8 and 9 decimals,
 and `intents.near` held about 2,785 of the first on the day. The three were added to the token
-tables in `demo/mainnet/`. `preflight` takes the first two tokens of a table, which are now BTC
-and ETH, and passed all five probes with them, the withdraw included.
+tables in `demo/mainnet/`. `preflight` takes the first two tokens of a table in order of symbol,
+which are now BTC and ETH, and passed all five probes with them, the withdraw included. Its
+output did not say which tokens it had signed for; it now does, in its second line.
 
 That is all that was run. No agent holds a bridged token, so no ring was settled in one, and
 nothing here deposits from another chain or withdraws to one. Chain Signatures were looked at
@@ -380,6 +381,8 @@ Nothing checks what the page draws against what it is told, and no other browser
 - **The devnet speaks NEAR JSON-RPC.** One client for both. The alternative, a trait with a mock
   behind it, would have left the real client untested until mainnet.
 - **A terminal, not a web page.** Three terminals with nothing between them is the argument.
+  That is still how a node runs. On 14 November two pages were added beside it, one that draws a
+  run and one that puts a person in an agent's seat; neither is needed to trade.
 - **MIT, edition 2021, `max_width = 120`,** tests named as sentences with a comment on what breaks
   if they fail: the conventions of NearBy.
 
@@ -397,7 +400,8 @@ Nothing checks what the page draws against what it is told, and no other browser
   its failed proposal still holds the other makers' wants until the deadline (see "under
   contention" below), and the proposals of a maker that could have reached everyone are declined
   meanwhile. On 14 November this repeated for as long as the nodes ran.
-- No language model in the loop: wants come from a config file or standard input.
+- No language model is bundled. Wants come from a config file, standard input, the `mcp` tools
+  or the `seat` page, and what to want is decided outside the node.
 - The ring search is bounded at 20,000 steps per starting want and ring length, so in a book
   crowded enough for the steps to run out, a ring of four can be missed. A node searches only from
   its own wants, at most 16. Measured on an Apple M4 Max in release, 13 November 2026, with a full
@@ -453,5 +457,8 @@ Nothing checks what the page draws against what it is told, and no other browser
   connections, and leave about 9,300 sockets in TIME_WAIT for 30 seconds when they exit, against
   16,384 ephemeral ports on macOS. Two hundred-agent runs at once, or one started straight after
   another, run out of ports: dials fail, and the run fails or does not clear.
-- `proc-macro-error2`, a transitive dependency, prints a future-incompatibility note on build.
-  It is harmless today.
+- `proc-macro-error2`, a transitive dependency of the conformance tests, prints a
+  future-incompatibility note when they are built. It is harmless today. Nothing else warns:
+  with Rust 1.100 three warnings had appeared that 1.97 did not give (a renamed atomic method, a
+  call libp2p's derive writes that the compiler now calls unreachable, a workspace field no
+  crate inherited), and each was dealt with where it arose.
