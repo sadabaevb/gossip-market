@@ -285,6 +285,21 @@ Before it: `preflight` passed, and each agent's holdings inside the verifier wer
 legs say. Only Carol held the 0.31 NEAR a submitter needs; the other two could not have sent it
 had she not.
 
+## Tokens of other chains, 14 November 2026
+
+A ring is netted inside the verifier, so it can carry any token the verifier holds, and that
+includes what its bridges bring from other chains: `eth.omft.near`, `btc.omft.near` and
+`sol.omft.near` answer `ft_metadata` as Ethereum, Bitcoin and Solana with 18, 8 and 9 decimals,
+and `intents.near` held about 2,785 of the first on the day. The three were added to the token
+tables in `demo/mainnet/`. `preflight` takes the first two tokens of a table, which are now BTC
+and ETH, and passed all five probes with them, the withdraw included.
+
+That is all that was run. No agent holds a bridged token, so no ring was settled in one, and
+nothing here deposits from another chain or withdraws to one. Chain Signatures were looked at
+for that and for nothing more: `v1.signer` answers on mainnet, and a signature for another chain
+comes after the ring, in another transaction, so it can carry an agent's assets in and out but
+cannot make a ring atomic across chains. The verifier's one transaction does that.
+
 ## A seat for a person, 14 November 2026
 
 `gossipmarket seat` serves `docs/seat/index.html` on localhost: the rehearsal of `mcp` with a

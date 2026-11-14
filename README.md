@@ -262,6 +262,13 @@ verifier and the payer of gas. There is nothing to register anywhere.
 - **Against the live contract.** On 12 November 2026 the four `preflight` probes were run against
   `intents.near` on mainnet and got the expected answers. The fee was 1 pip (a millionth). A fifth
   probe, a withdraw, was added with `withdraw` and got its expected answer the same day.
+- **With tokens of other chains, by dry run only.** NEAR Intents holds assets bridged from other
+  chains as tokens of the same verifier, and a node trades whatever its token table names. The
+  tables in `demo/mainnet/` name bridged ETH, BTC and SOL (`nep141:eth.omft.near` and its like).
+  On 14 November 2026 `preflight` signed a leg giving BTC for ETH and a withdraw of one of them,
+  and `intents.near` read both and stopped only at the balance. Nothing was traded in them: the
+  agents hold none. Bringing such a token in from its own chain and taking it back is the
+  bridge's work, not this repo's; `withdraw` pays out to a NEAR account only.
 - **Against misbehaving peers.** `node/src/tests.rs` runs whole markets in which a proposer
   collects signatures and vanishes, a maker never answers, signatures are withheld until they
   expire, or a stranger proposes rings it is not in. The honest nodes settle anyway, get their
@@ -284,7 +291,7 @@ verifier and the payer of gas. There is nothing to register anywhere.
   Then `withdraw` took 0.05 USDC from one agent back out of the verifier to an ordinary account
   ([`C9ediagwiPguKwYjdKZAbFbaTdLzrjXV7v81voU4QTna`](https://nearblocks.io/txns/C9ediagwiPguKwYjdKZAbFbaTdLzrjXV7v81voU4QTna)).
 
-  On 14 November 2026 the same three agents, with the configs in `demo/mainnet/` as they are, did
+  On 14 November 2026 the same three agents, with the same wants in `demo/mainnet/`, did
   it again for the demo video: the three nodes were started a second and a half apart, and all
   three logged `SETTLED` 10 seconds after the first one started, 18 Tgas burnt
   ([`GEeSFMnxE3bj86JXX9yMeyFTPV3FLhuZWnu9z4t45KVn`](https://pikespeak.ai/transaction-viewer/GEeSFMnxE3bj86JXX9yMeyFTPV3FLhuZWnu9z4t45KVn)).
@@ -355,6 +362,18 @@ vectors above, is that teammate's own entry; its author is not part of this proj
   what price.
 - Wants with proof of funds, so that a book cannot be filled with wants nobody can pay for.
 - Relay and hole punching, for agents behind NAT.
+- Agree offline, settle later. Agents on a local network with no way out could find each other,
+  close a ring and sign its legs with a long deadline, for whichever of them reaches the chain
+  first to send. The verifier already allows it: a leg is good until its deadline or until its
+  nonce is spent. A node does not: it reads the fee, the salt and its balances from the chain
+  before it proposes, and signs for 30 seconds. Until the transaction lands such a ring is a
+  promise, not a settlement, since a maker can still spend the same tokens elsewhere.
+- Out to the chain a token came from. `withdraw` pays a NEAR account; a bridged token goes home
+  through its bridge, which wants its own note on the withdrawal. Not written: there was nothing
+  bridged to try it with, and a command that moves money should have run once before it ships.
+- One key, every chain. With NEAR's Chain Signatures an agent's account can have an address on
+  Ethereum and on Bitcoin, so that it could bring its own assets in through the bridge and take
+  them out again with no other wallet.
 - Sealed wants for the first round of a ring, to narrow what listeners learn.
 
 ## License

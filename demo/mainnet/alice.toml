@@ -18,6 +18,11 @@ verifier = "intents.near"
 USDC = { id = "nep141:17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1", decimals = 6 }
 USDT = { id = "nep141:usdt.tether-token.near", decimals = 6 }
 NEAR = { id = "nep141:wrap.near", decimals = 24 }
+# Assets of other chains, as NEAR Intents holds them once they are bridged in. A node trades any
+# token named here; none of the demo's wants uses these.
+ETH = { id = "nep141:eth.omft.near", decimals = 18 }
+BTC = { id = "nep141:btc.omft.near", decimals = 8 }
+SOL = { id = "nep141:sol.omft.near", decimals = 9 }
 
 # Amounts small enough to lose. The prices are placeholders, not the market's: the three wants
 # close into a ring because each maker asks for less than the next one gives.
