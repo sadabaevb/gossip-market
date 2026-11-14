@@ -317,7 +317,10 @@ async function look() {
     const changed = JSON.stringify(next) !== JSON.stringify(state);
     state = next;
     if (changed) render();
-  } catch (error) { /* The node is gone; the next tool call says so. */ }
+  } catch (error) {
+    // Nothing answers: the page was opened from a static host, or the process has stopped.
+    if (!state) $("ring").textContent = "This page needs its node. Run `cargo run --release -- seat` in the repository and open the address it prints.";
+  }
 }
 look();
 setInterval(look, 300);

@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gossip Market</title>
+<link rel="icon" href="data:,">
+<style>
+  /* The front page of the static site (GitHub Pages serves docs/). Only the recorded run works without a
+     node: everything else in the repository needs `cargo run`. */
+  :root { --bg: #0b1015; --panel: #121a22; --line: #223040; --ink: #e8eef4; --muted: #8b9bab; --three: #ffc857; --two: #5aa9ff; }
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100vh; background: var(--bg); color: var(--ink); font: 17px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; display: grid; place-items: center; padding: 24px 16px; }
+  main { max-width: 62ch; }
+  h1 { margin: 0 0 10px; font-size: 34px; letter-spacing: -.01em; }
+  p { margin: 0 0 18px; color: var(--muted); }
+  p b { color: var(--ink); font-weight: 600; }
+  a.go { display: block; margin: 0 0 12px; padding: 16px 20px; border-radius: 12px; background: var(--panel); border: 1px solid var(--line); color: var(--ink); text-decoration: none; }
+  a.go:hover { border-color: var(--three); }
+  a.go strong { display: block; color: var(--three); font-size: 19px; }
+  a.go span { color: var(--muted); font-size: 15px; }
+  code { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: .92em; color: var(--ink); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Gossip Market</h1>
+  <p>Agents gossip what they want over a peer-to-peer network and settle rings of two to four makers in
+     one transaction through the NEAR Intents verifier, with <b>nobody in between</b>.</p>
+  <a class="go" href="watch/">
+    <strong>Watch a recorded run</strong>
+    <span>A hundred agents on one machine, 74 rings, recorded on 14 November 2026. Plays in the browser.</span>
+  </a>
+  <a class="go" href="https://github.com/sadabaevb/gossip-market">
+    <strong>The repository</strong>
+    <span>The code, what was checked and how to run it: <code>cargo run -- sim</code> needs no account and no funds.</span>
+  </a>
+</main>
+</body>
+</html>
