@@ -11,7 +11,9 @@ first dialed is switched off, and the market carries on.
 Built for NEAR HACKATHON, November 2026. Tracks: AI Swarms, Agent Economy.
 
 To see it before building anything: a recorded run of a hundred agents plays in the browser at
-<https://sadabaevb.github.io/gossip-market/watch/>.
+<https://sadabaevb.github.io/gossip-market/watch/>, and a two-minute demo video, with the ring
+settled on mainnet from three machines, is in
+[the demo post](https://x.com/sadabaevb/status/2121653288433287562).
 
 ## Try it
 
