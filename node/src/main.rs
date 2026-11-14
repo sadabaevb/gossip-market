@@ -4,6 +4,7 @@
 mod config;
 mod console;
 mod crowd;
+mod mcp;
 mod net;
 mod node;
 mod preflight;
@@ -65,6 +66,14 @@ enum Run {
         /// Log to standard output instead of drawing the screen.
         #[arg(long)]
         plain: bool,
+    },
+    /// Serves the market to an AI agent as tools, over the Model Context Protocol on standard
+    /// input and output. Without a config it is a rehearsal that needs nothing set up: a local
+    /// verifier and two other agents whose wants close a ring of three with the agent's.
+    Mcp {
+        /// The node to trade as, e.g. demo/mainnet/alice.toml. Left out: the rehearsal.
+        #[arg(long)]
+        config: Option<PathBuf>,
     },
     /// Runs a local verifier that answers the NEAR JSON-RPC calls agents make, with the balances
     /// in a genesis file. For rehearsing without funds; not a chain.
@@ -194,6 +203,7 @@ async fn run(command: Run) -> Result<()> {
             }
             Ok(())
         }
+        Run::Mcp { config } => mcp::run(config).await,
         Run::Devnet { genesis, port } => devnet(genesis, port).await,
         Run::Keygen { out } => keygen(out),
         Run::Account { config } => account(config).await,

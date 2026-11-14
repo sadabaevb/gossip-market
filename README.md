@@ -31,7 +31,7 @@ each one does. You should see, in order:
 Then the tests:
 
 ```sh
-cargo test                  # 77 tests, under half a minute after the first build
+cargo test                  # 81 tests, under half a minute after the first build
 cargo test -p conformance   # 7 tests against the verifier's own engine; fetches near/intents, takes a few minutes the first time
 ```
 
@@ -76,6 +76,42 @@ or so, and `SIMULATION PASSED` in green. The page stays up while it is open.
 Without building anything, open `docs/watch/index.html` in a browser: it plays back a run of a
 hundred agents recorded on 14 November 2026, 74 rings, 19 of them of three makers.
 `--record docs/watch/run.js` records another.
+
+### Hand the market to an AI agent
+
+```sh
+cargo build --release
+claude mcp add gossipmarket -- "$PWD/target/release/gossipmarket" mcp
+```
+
+`gossipmarket mcp` serves the market as eight tools over the Model Context Protocol, on standard
+input and output: read the book, place and cancel a want, wait for a settlement, check it against
+the verifier. The agent decides what to want; the node finds the ring and settles it. With no
+config it is a rehearsal like `sim`, with nothing to set up: a local verifier, and Bob and Carol
+with wants that no two of the three can trade on. The agent is Alice, holds 50 USDC and has no
+wants yet. Ask it to buy compute credits. Opened in this directory, Claude Code offers the same
+server from `.mcp.json`; any other client starts `gossipmarket mcp` the way it starts any stdio
+server.
+
+By hand, without an agent:
+
+```sh
+printf '%s\n' \
+  '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_open_wants","arguments":{}}}' \
+  '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"place_want","arguments":{"give":"10 USDC","take":"95 CREDITS"}}}' \
+  '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"wait_for_settlement","arguments":{}}}' \
+  | cargo run -q -- mcp
+```
+
+The first answer lists Bob's and Carol's wants. The third starts with `SETTLED ring … of 3 makers,
+with bob … and carol …: you gave 10 USDC and got 103.039 CREDITS`, and names the transaction that
+`verify_settlement` reads back.
+
+`--config demo/mainnet/alice.toml` serves a real node instead of the rehearsal. Both generations
+of the protocol are answered: revision 2026-07-28 request by request, and the earlier ones after
+their `initialize`. What was run on 14 November 2026: the tools over standard input as above, and
+the replies checked against the protocol's published JSON schemas for 2026-07-28 and 2025-11-25.
+No AI client had been connected to it when this was written.
 
 ### On screen, as separate processes
 
@@ -181,7 +217,7 @@ verifier and the payer of gas. There is nothing to register anywhere.
 | `intents` | What the verifier reads: NEP-413 signed `token_diff` and `ft_withdraw` intents, nonces, the fee rounding, and the verifier's rules over balances in memory |
 | `chain` | The NEAR JSON-RPC calls a node makes, transaction encoding, and a local devnet that answers the same calls |
 | `market` | Signed wants, the book, and the ring search and sizing |
-| `node` | The `gossipmarket` binary: the agent, its screen, the simulation and the page that draws it, `preflight`, `verify` and `withdraw` |
+| `node` | The `gossipmarket` binary: the agent, its screen, the simulation and the page that draws it, the tools for an AI agent (`mcp`), `preflight`, `verify` and `withdraw` |
 | `conformance` | Runs the bundles this code signs through the verifier's own engine (`defuse-core`, pinned) and compares answers with ours, word for word |
 
 ## What was checked, and how
@@ -218,11 +254,11 @@ verifier and the payer of gas. There is nothing to register anywhere.
 
 ## What this does not claim
 
-- **The agents here are not language models.** A node holds wants and follows the protocol; what
-  to want is decided outside it. `gossipmarket node --plain` reads commands on standard input and
-  writes events to standard output, which is the seam an LLM agent or any other program plugs
-  into. This repo is the part an agent cannot improvise: finding counterparties with no server and
-  settling with nobody to trust.
+- **No language model is bundled or called here.** A node holds wants and follows the protocol;
+  what to want is decided outside it: by a person at the screen, by a program on
+  `gossipmarket node --plain`, or by an AI agent through `gossipmarket mcp`, with whatever model
+  that agent runs on. This repo is the part an agent cannot improvise: finding counterparties with
+  no server and settling with nobody to trust.
 - **It is not a better swap venue.** For liquid pairs, professional market makers behind the
   Intents solver relay quote tighter and faster. This is for trades the relay does not serve:
   agent to agent, long-tail assets, three or four parties with nobody holding inventory.
@@ -276,7 +312,8 @@ vectors above, is that teammate's own entry; its author is not part of this proj
 
 ## Next
 
-- An LLM agent on the `--plain` seam, deciding what to want and at what price.
+- An agent of its own on the `mcp` tools, with a goal and a budget, deciding what to want and at
+  what price.
 - Wants with proof of funds, so that a book cannot be filled with wants nobody can pay for.
 - Relay and hole punching, for agents behind NAT.
 - Sealed wants for the first round of a ring, to narrow what listeners learn.

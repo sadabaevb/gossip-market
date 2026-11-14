@@ -202,6 +202,27 @@ Each passed every check, on four to five cores. With eight busy processes compet
 ten cores, seed 1 settled 81 rings, the last 226 seconds after the last agent started, and passed
 every check. What the reviews found and nothing was done about is under the known gaps.
 
+## Tools for an AI agent, 14 November 2026
+
+`gossipmarket mcp` puts a node behind the Model Context Protocol, on standard input and output.
+The protocol's current revision, 2026-07-28, dropped the `initialize` handshake: every request
+names its revision in `_meta` and is answered on its own, and a server must answer
+`server/discover`. Clients of the earlier revisions still open with `initialize`. The server
+tells the two apart by whether a request names its revision, and answers each in its own shape.
+A request that names no revision and shook no hands is answered in the earlier shape, so that the
+tools can be tried by hand.
+
+What was checked: four tests, one of which closes a ring of three with nothing but the tools; and
+the replies of the built binary to `server/discover`, `tools/list`, `tools/call`, a failed tool
+call and an unsupported revision, against the schemas published with the protocol for 2026-07-28
+and 2025-11-25. Driving the binary by hand found what the tests had not: a tool called within a
+moment of starting was told the node held nothing, because the node had not read the verifier
+yet. The first tool call now waits for that, and in a rehearsal for the others' wants to arrive.
+
+What was not: no AI client had been connected to it. Requests are answered one at a time, so a
+`wait_for_settlement` holds up whatever the client asks meanwhile, for at most a minute, and a
+`notifications/cancelled` does not cut it short.
+
 ## The run on a page, 14 November 2026
 
 `sim --agents N --web` serves `docs/watch/index.html` on localhost and tells it the run as a list
