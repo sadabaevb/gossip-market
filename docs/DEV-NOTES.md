@@ -309,7 +309,11 @@ server, Alice on the home laptop, Bob still on the other laptop, whose node had 
 redialed the server by itself. Carol heard Bob's want 4.6 seconds after she started, proposed at
 4.7, had both legs at 4.9 and logged `SETTLED` at 6.8; Alice at 7.0. Transaction
 `DKrtQ5gNv47kFXPZacPcaBnTqB3ZkLMzH5igaoB5tfDG`, `VERIFIED`, and the three accounts' holdings moved
-by what the legs say. Bob's own lines from that run are on his machine and were not collected.
+by what the legs say. Bob's log, sent over afterwards, has the same run from his side: connected
+to Carol and to nobody else, signed his leg in the second she proposed, `SETTLED` in the second
+the others logged it. It also has the try before it as he saw it, three proposals of his own
+declined or unanswered, and it shows his laptop on the home network for a minute between the two
+runs before it lists the hotspot's address again.
 
 Each agent's key was on its machine only for the run. Two of the three makers were unreachable
 from outside, and the ring settled because the third was not. See "No NAT traversal" under the

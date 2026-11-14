@@ -306,7 +306,7 @@ verifier and the payer of gas. There is nothing to register anywhere.
   Carol on a server in Helsinki with a public address, Alice on a laptop behind a home router,
   Bob on another person's laptop behind a phone's hotspot. The two laptops dialed the server and
   nothing else. Carol proposed the ring 0.1 seconds after she heard Bob's want, both signed over
-  the connections they had opened, and she and Alice logged `SETTLED` 2 seconds later
+  the connections they had opened, and all three logged `SETTLED` 2 seconds later
   ([`DKrtQ5gNv47kFXPZacPcaBnTqB3ZkLMzH5igaoB5tfDG`](https://pikespeak.ai/transaction-viewer/DKrtQ5gNv47kFXPZacPcaBnTqB3ZkLMzH5igaoB5tfDG);
   `verify` ends with `VERIFIED`).
 
