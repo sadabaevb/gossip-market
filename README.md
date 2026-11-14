@@ -302,6 +302,22 @@ verifier and the payer of gas. There is nothing to register anywhere.
   `verify` on it ended with `VERIFIED` minutes later from the endpoint in the config; once that
   node forgets the transaction, the command needs `--rpc` as above.
 
+  Later that day the three agents ran on three machines in three networks, held by two people:
+  Carol on a server in Helsinki with a public address, Alice on a laptop behind a home router,
+  Bob on another person's laptop behind a phone's hotspot. The two laptops dialed the server and
+  nothing else. Carol proposed the ring 0.1 seconds after she heard Bob's want, both signed over
+  the connections they had opened, and she and Alice logged `SETTLED` 2 seconds later
+  ([`DKrtQ5gNv47kFXPZacPcaBnTqB3ZkLMzH5igaoB5tfDG`](https://pikespeak.ai/transaction-viewer/DKrtQ5gNv47kFXPZacPcaBnTqB3ZkLMzH5igaoB5tfDG);
+  `verify` ends with `VERIFIED`).
+
+  The first try that hour did not settle and spent nothing: with Carol on the laptop instead,
+  she proposed first, could not dial Bob through two routers, and held Alice's want while Bob's
+  own proposals were declined. That is the missing NAT traversal: a ring settles when its
+  proposer can reach every maker. Eighteen minutes earlier a ring with Alice on the server and
+  the other two on one laptop had settled
+  ([`7TVBEDH72Rk3xM9UXAoeM5TkjoAjTdbEiWuQQSttwbn4`](https://pikespeak.ai/transaction-viewer/7TVBEDH72Rk3xM9UXAoeM5TkjoAjTdbEiWuQQSttwbn4),
+  `VERIFIED`); the run was cut short and its log was not kept.
+
 ## What this does not claim
 
 - **No language model is bundled or called here.** A node holds wants and follows the protocol;

@@ -285,6 +285,36 @@ Before it: `preflight` passed, and each agent's holdings inside the verifier wer
 legs say. Only Carol held the 0.31 NEAR a submitter needs; the other two could not have sent it
 had she not.
 
+## Three machines, 14 November 2026
+
+Until that afternoon every node had run on one machine. A Linux build of the node was put on a
+server in Helsinki (cross-compiled; `sim` passes there), and a throwaway node on it and another
+on a laptop behind a home router connected to each other.
+
+14:28 UTC, Alice on the server, Bob and Carol on the laptop: settled,
+`7TVBEDH72Rk3xM9UXAoeM5TkjoAjTdbEiWuQQSttwbn4`. The run was interrupted from outside just after,
+before its log was written; what is known of it is the command that started it and the
+transaction, which `verify` reads back.
+
+14:40 UTC, Alice on the server, Carol on the laptop, Bob on a second person's laptop behind a
+phone's hotspot: did not settle, and nothing was sent to the chain. Carol proposed 0.1 seconds
+after hearing Bob's want and failed at once with "a maker could not be reached: Failed to dial
+the requested peer": she and Bob both sat behind routers and each was connected only to Alice.
+Alice had signed Carol's proposal, so when Bob proposed the same ring four seconds later she
+declined it as committed. Forty seconds on, Alice's want was free, Carol proposed first again,
+and the same happened. The nodes were stopped after two rounds.
+
+14:46 UTC, the roles swapped so that the proposer is the node anyone can reach: Carol on the
+server, Alice on the home laptop, Bob still on the other laptop, whose node had kept running and
+redialed the server by itself. Carol heard Bob's want 4.6 seconds after she started, proposed at
+4.7, had both legs at 4.9 and logged `SETTLED` at 6.8; Alice at 7.0. Transaction
+`DKrtQ5gNv47kFXPZacPcaBnTqB3ZkLMzH5igaoB5tfDG`, `VERIFIED`, and the three accounts' holdings moved
+by what the legs say. Bob's own lines from that run are on his machine and were not collected.
+
+Each agent's key was on its machine only for the run. Two of the three makers were unreachable
+from outside, and the ring settled because the third was not. See "No NAT traversal" under the
+known gaps for what this does and does not show.
+
 ## Tokens of other chains, 14 November 2026
 
 A ring is netted inside the verifier, so it can carry any token the verifier holds, and that
@@ -355,7 +385,14 @@ Nothing checks what the page draws against what it is told, and no other browser
   submit or withdraw, though a ring of three burns 19 Tgas and a withdraw 33. Less would do; how
   much a ring of four burns has not been measured.
 - No command to send an agent's NEAR for gas back off its account.
-- No NAT traversal: nodes need a reachable address or a shared local network.
+- No NAT traversal. A ring settles when its proposer can reach every maker, and a proposer
+  reaches a maker over a connection either of them opened. So makers behind routers can trade
+  with one that has a public address and proposes, as on 14 November; two makers behind
+  different routers cannot reach each other, and a ring that one of them proposes falls through.
+  The maker with the lowest account proposes first. When that maker is the one behind a router,
+  its failed proposal still holds the other makers' wants until the deadline (see "under
+  contention" below), and the proposals of a maker that could have reached everyone are declined
+  meanwhile. On 14 November this repeated for as long as the nodes ran.
 - No language model in the loop: wants come from a config file or standard input.
 - The ring search is bounded at 20,000 steps per starting want and ring length, so in a book
   crowded enough for the steps to run out, a ring of four can be missed. A node searches only from
