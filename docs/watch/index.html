@@ -1,0 +1,367 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gossip Market, watched</title>
+<link rel="icon" href="data:,">
+<style>
+  /* One page, two uses: `sim --agents N --web` serves it and it asks for events as they happen;
+     beside a `run.js` it plays that recording back, from disk, with no server. */
+  :root {
+    --bg: #0b1015; --panel: #121a22; --line: #223040; --ink: #e8eef4; --muted: #8b9bab;
+    --two: #5aa9ff; --three: #ffc857; --four: #ff6fae; --ok: #3ddc97; --bad: #ff7b72;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.45 var(--sans); display: flex; flex-direction: column; }
+  header { padding: 14px 20px 10px; border-bottom: 1px solid var(--line); display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 18px; }
+  h1 { margin: 0; font-size: 20px; font-weight: 650; letter-spacing: .01em; }
+  header p { margin: 0; color: var(--muted); max-width: 95ch; }
+  main { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 360px; }
+  #stage { min-width: 0; min-height: 0; display: flex; align-items: center; justify-content: center; padding: 8px; }
+  svg { width: 100%; height: 100%; max-height: calc(100vh - 120px); }
+  aside { border-left: 1px solid var(--line); background: var(--panel); padding: 16px 18px; overflow-y: auto; display: flex; flex-direction: column; gap: 16px; }
+  .big { font: 600 54px/1 var(--sans); font-variant-numeric: tabular-nums; }
+  .big small { display: block; font: 400 14px/1.4 var(--sans); color: var(--muted); margin-top: 6px; }
+  dl { margin: 0; display: grid; grid-template-columns: 1fr auto; gap: 5px 12px; }
+  dt { color: var(--muted); }
+  dd { margin: 0; font: 15px var(--mono); font-variant-numeric: tabular-nums; text-align: right; }
+  .swatch { display: inline-block; width: 18px; height: 3px; border-radius: 2px; vertical-align: middle; margin-right: 8px; }
+  .key { color: var(--three); }
+  #status { font-weight: 600; }
+  #status.ok { color: var(--ok); }
+  #status.bad { color: var(--bad); }
+  #checks { margin: 6px 0 0; padding: 0; list-style: none; color: var(--muted); font-size: 13px; display: flex; flex-direction: column; gap: 3px; }
+  #checks li::before { content: "✓ "; color: var(--ok); }
+  h2 { margin: 0 0 6px; font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+  #tokens { display: flex; flex-wrap: wrap; gap: 4px 12px; font: 13px var(--mono); }
+  #tokens i { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 5px; }
+  .legend { color: var(--muted); font-size: 13px; margin: 6px 0 0; }
+  #feed { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 7px; font-size: 13px; }
+  #feed li { border-left: 3px solid var(--two); padding-left: 9px; overflow-wrap: anywhere; }
+  #feed li.n3 { border-color: var(--three); }
+  #feed li.n4 { border-color: var(--four); }
+  #feed li.no { border-color: var(--bad); color: var(--muted); }
+  #feed b { font-weight: 600; }
+  #feed span { color: var(--muted); font-family: var(--mono); font-size: 12px; }
+  footer { border-top: 1px solid var(--line); padding: 9px 20px; display: flex; align-items: center; gap: 12px; color: var(--muted); }
+  footer[hidden] { display: none; }
+  footer button, footer select { font: inherit; color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 4px 12px; cursor: pointer; }
+  footer input[type=range] { flex: 1; accent-color: var(--three); }
+  #clock { font: 14px var(--mono); min-width: 13ch; text-align: right; }
+  #empty { margin: auto; max-width: 60ch; padding: 24px; color: var(--muted); }
+  #empty code { color: var(--ink); font-family: var(--mono); }
+
+  .node { transition: opacity .4s, r .25s; }
+  .node.locked { stroke: #fff; stroke-width: 2.5; }
+  .node.spent { fill-opacity: .16; }
+  .node.gone { fill: #2a333d; stroke: #4a5663; stroke-width: 1.5; stroke-dasharray: 3 3; }
+  .label { fill: var(--muted); font: 15px var(--mono); }
+  .leg { fill: none; stroke-linecap: round; stroke-width: 5; opacity: .95; transition: opacity 1.4s, stroke-width 1.4s; }
+  .leg.n2 { stroke: var(--two); }
+  .leg.n3 { stroke: var(--three); }
+  .leg.n4 { stroke: var(--four); }
+  .leg.old { stroke-width: 1.2; opacity: .26; }
+  /* The rings no pair could have settled stay easier to pick out once they have faded. */
+  .leg.n3.old, .leg.n4.old { stroke-width: 1.6; opacity: .5; }
+  @media (max-width: 860px) {
+    main { grid-template-columns: 1fr; }
+    aside { border-left: 0; border-top: 1px solid var(--line); }
+    svg { max-height: 70vh; }
+  }
+  @media (prefers-reduced-motion: reduce) { .node, .leg { transition: none; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Gossip Market</h1>
+  <p id="about">Each dot is an agent with its own key and its own node. A line is a ring of two to four of them settling in one transaction, with no server, matcher or coordinator between them.</p>
+</header>
+<main>
+  <div id="stage">
+    <svg id="ring" viewBox="0 0 1000 1000" role="img" aria-label="The agents in a circle and the rings that settled between them">
+      <defs>
+        <marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="4.5" markerHeight="4.5" orient="auto"><path d="M0 0L10 5L0 10z" fill="#5aa9ff"/></marker>
+        <marker id="a3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="4.5" markerHeight="4.5" orient="auto"><path d="M0 0L10 5L0 10z" fill="#ffc857"/></marker>
+        <marker id="a4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="4.5" markerHeight="4.5" orient="auto"><path d="M0 0L10 5L0 10z" fill="#ff6fae"/></marker>
+      </defs>
+      <g id="legs"></g>
+      <g id="nodes"></g>
+      <g id="labels"></g>
+    </svg>
+  </div>
+  <aside>
+    <div class="big"><span id="count">0</span><small>rings settled</small></div>
+    <dl>
+      <dt><i class="swatch" style="background:var(--two)"></i>of two makers</dt><dd id="by2">0</dd>
+      <dt><i class="swatch" style="background:var(--three)"></i>of three</dt><dd id="by3">0</dd>
+      <dt><i class="swatch" style="background:var(--four)"></i>of four</dt><dd id="by4">0</dd>
+      <dt class="key">no pair could have settled these</dt><dd id="multi" class="key">0%</dd>
+      <dt>agents live / quit</dt><dd id="agents">0 / 0</dd>
+      <dt>refused by the verifier</dt><dd id="refused">0</dd>
+      <dt>since the last agent started</dt><dd id="time">0.0 s</dd>
+    </dl>
+    <div>
+      <div id="status">waiting for the market</div>
+      <ul id="checks"></ul>
+    </div>
+    <div>
+      <h2>What each agent gives</h2>
+      <div id="tokens"></div>
+      <p class="legend">White outline: its want is signed into a ring that is settling. Faded: nothing left to trade. Dashed grey: quit, some in the middle of a ring.</p>
+    </div>
+    <div>
+      <h2>Settlements</h2>
+      <ul id="feed"></ul>
+    </div>
+  </aside>
+</main>
+<footer id="replay" hidden>
+  <button id="play" type="button">Pause</button>
+  <select id="speed" aria-label="Playback speed">
+    <option value="1">1×</option><option value="2">2×</option><option value="4" selected>4×</option><option value="10">10×</option>
+  </select>
+  <input id="seek" type="range" min="0" max="1000" value="0" aria-label="Position in the recording">
+  <span id="clock">0.0 s</span>
+  <span id="source"></span>
+</footer>
+<script src="run.js"></script>
+<script>
+(function () {
+  'use strict';
+  var COLORS = ['#5aa9ff', '#3ddc97', '#ffc857', '#c792ea', '#ff7b72', '#9aa7b4', '#7ee0ff', '#f4a261'];
+  var NS = 'http://www.w3.org/2000/svg';
+  var $ = function (id) { return document.getElementById(id); };
+  var market = null, spots = [], state = null;
+
+  function svg(tag, attrs, parent) {
+    var el = document.createElementNS(NS, tag);
+    for (var key in attrs) { el.setAttribute(key, attrs[key]); }
+    parent.appendChild(el);
+    return el;
+  }
+
+  function colorOf(token) {
+    var i = market.tokens.indexOf(token);
+    return COLORS[i < 0 ? COLORS.length - 1 : i % COLORS.length];
+  }
+
+  // The agents once, in a circle; everything after only changes how they look.
+  function layout() {
+    var n = market.agents.length;
+    var radius = n <= 12 ? 16 : n <= 40 ? 10 : 6.5;
+    $('nodes').textContent = '';
+    $('labels').textContent = '';
+    spots = market.agents.map(function (agent, i) {
+      var angle = -Math.PI / 2 + 2 * Math.PI * i / n;
+      var x = 500 + 420 * Math.cos(angle), y = 500 + 420 * Math.sin(angle);
+      var gives = agent.wants.length ? agent.wants[0].give : '';
+      var node = svg('circle', { cx: x.toFixed(1), cy: y.toFixed(1), r: radius, fill: colorOf(gives), 'class': 'node' }, $('nodes'));
+      var wants = agent.wants.map(function (w) { return 'gives ' + w.give + ' for ' + w.take; }).join('; ');
+      svg('title', {}, node).textContent = agent.name + (wants ? ': ' + wants : '');
+      if (n <= 40) {
+        var lx = 500 + 458 * Math.cos(angle), ly = 500 + 458 * Math.sin(angle);
+        var anchor = Math.abs(Math.cos(angle)) < 0.3 ? 'middle' : Math.cos(angle) > 0 ? 'start' : 'end';
+        svg('text', { x: lx.toFixed(1), y: (ly + 5).toFixed(1), 'text-anchor': anchor, 'class': 'label' }, $('labels')).textContent = agent.name;
+      }
+      return { x: x, y: y, node: node, r: radius };
+    });
+    $('tokens').textContent = '';
+    market.tokens.forEach(function (token) {
+      var item = document.createElement('span');
+      var dot = document.createElement('i');
+      dot.style.background = colorOf(token);
+      item.appendChild(dot);
+      item.appendChild(document.createTextNode(token));
+      $('tokens').appendChild(item);
+    });
+    if (market.about) { $('about').textContent = market.about; }
+  }
+
+  function reset() {
+    state = { count: 0, by: { 2: 0, 3: 0, 4: 0 }, refused: 0, quit: 0, t: 0, done: null, cleared: null, checks: [] };
+    $('legs').textContent = '';
+    $('feed').textContent = '';
+    $('checks').textContent = '';
+    spots.forEach(function (spot) { spot.node.setAttribute('class', 'node'); });
+  }
+
+  // A leg bends toward the middle, so that rings between neighbours do not hide under the dots.
+  function leg(from, to, size, fresh) {
+    var mx = (from.x + to.x) / 2, my = (from.y + to.y) / 2;
+    var cx = mx + (500 - mx) * 0.35, cy = my + (500 - my) * 0.35;
+    // Stop short of the dot it points at, so the arrow head shows.
+    var dx = to.x - cx, dy = to.y - cy, len = Math.sqrt(dx * dx + dy * dy) || 1;
+    var ex = to.x - dx / len * (to.r + 4), ey = to.y - dy / len * (to.r + 4);
+    var d = 'M' + from.x.toFixed(1) + ' ' + from.y.toFixed(1) + 'Q' + cx.toFixed(1) + ' ' + cy.toFixed(1) + ' ' + ex.toFixed(1) + ' ' + ey.toFixed(1);
+    var path = svg('path', { d: d, 'class': 'leg n' + size + (fresh ? '' : ' old') }, $('legs'));
+    if (fresh) {
+      path.setAttribute('marker-end', 'url(#a' + size + ')');
+      setTimeout(function () { path.setAttribute('class', 'leg n' + size + ' old'); path.removeAttribute('marker-end'); }, 2600);
+    }
+  }
+
+  function feed(html, cls) {
+    var item = document.createElement('li');
+    if (cls) { item.className = cls; }
+    item.innerHTML = html;
+    $('feed').insertBefore(item, $('feed').firstChild);
+    while ($('feed').children.length > 12) { $('feed').removeChild($('feed').lastChild); }
+  }
+
+  function esc(text) {
+    return String(text).replace(/[&<>]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]; });
+  }
+
+  function nameOf(i) { return market.agents[i] ? market.agents[i].name : '?'; }
+
+  // "8.793293837447532141269923 NEAR" is exact and unreadable; four decimals are enough to watch by.
+  function brief(amount) {
+    return String(amount).replace(/(\.\d{4})\d+/, '$1…');
+  }
+
+  // `fresh` is false while catching up or seeking: the picture is drawn as it would have ended up.
+  function apply(event, fresh) {
+    state.t = Math.max(state.t, event.t || 0);
+    switch (event.k) {
+      case 'pulse':
+        for (var i = 0; i < spots.length; i++) {
+          var c = event.s.charAt(i);
+          spots[i].node.setAttribute('class', 'node' + (c === 'L' ? ' locked' : c === '.' ? ' spent' : c === 'x' ? ' gone' : ''));
+        }
+        break;
+      case 'ring':
+        var makers = event.makers, size = makers.length;
+        state.count += 1;
+        state.by[size] = (state.by[size] || 0) + 1;
+        for (var m = 0; m < size; m++) { leg(spots[makers[m]], spots[makers[(m + 1) % size]], size, fresh); }
+        feed('<b>#' + state.count + ' ring of ' + size + '</b> · ' +
+          makers.map(function (maker, j) { return esc(nameOf(maker)) + ' gives ' + esc(brief(event.gives[j])); }).join(' → ') +
+          ' <span>tx ' + esc(event.tx) + '…</span>', 'n' + size);
+        break;
+      case 'quit':
+        state.quit += 1;
+        break;
+      case 'refused':
+        state.refused += 1;
+        feed('refused: ' + esc(event.why) + ' <span>' + esc(nameOf(event.a)) + ', nothing spent but gas</span>', 'no');
+        break;
+      case 'cleared':
+        state.cleared = event.t;
+        break;
+      case 'check':
+        state.checks.push(event.text);
+        var line = document.createElement('li');
+        line.textContent = event.text;
+        $('checks').appendChild(line);
+        break;
+      case 'done':
+        state.done = event;
+        break;
+    }
+  }
+
+  function render() {
+    var multi = (state.by[3] || 0) + (state.by[4] || 0);
+    $('count').textContent = state.count;
+    $('by2').textContent = state.by[2] || 0;
+    $('by3').textContent = state.by[3] || 0;
+    $('by4').textContent = state.by[4] || 0;
+    $('multi').textContent = state.count ? Math.round(100 * multi / state.count) + '%' : '0%';
+    $('agents').textContent = (market.agents.length - state.quit) + ' / ' + state.quit;
+    $('refused').textContent = state.refused;
+    $('time').textContent = state.t.toFixed(1) + ' s';
+    var status = $('status');
+    if (state.done) {
+      status.textContent = state.done.text;
+      status.className = state.done.ok ? 'ok' : 'bad';
+    } else if (state.cleared !== null) {
+      status.textContent = 'cleared at ' + state.cleared.toFixed(1) + ' s: no ring is left among the open wants. Checking every transaction…';
+      status.className = 'ok';
+    } else {
+      status.textContent = state.count ? 'trading' : 'agents are finding each other';
+      status.className = '';
+    }
+  }
+
+  // Served by the simulation: ask for what is new, a few times a second.
+  function live() {
+    var have = 0;
+    function poll() {
+      fetch('/events/' + have).then(function (r) { return r.json(); }).then(function (list) {
+        // The first answer may hold a market already under way; draw that without the fanfare.
+        var fresh = have > 0 || list.length < 8;
+        list.forEach(function (event) { apply(event, fresh); });
+        have += list.length;
+        render();
+        setTimeout(poll, state.done ? 2000 : 250);
+      }).catch(function () {
+        $('status').textContent = 'the simulation has stopped';
+        setTimeout(poll, 2000);
+      });
+    }
+    fetch('/market').then(function (r) { return r.json(); }).then(function (answer) {
+      if (!answer || !answer.agents) { setTimeout(live, 300); return; }
+      market = answer;
+      layout();
+      reset();
+      render();
+      poll();
+    }).catch(function () { setTimeout(live, 1000); });
+  }
+
+  // Beside a recording: play it back, at a speed, with a slider.
+  function replay(run) {
+    market = run.market;
+    var events = run.events, end = events.length ? events[events.length - 1].t : 0;
+    var clock = 0, next = 0, playing = true, last = null;
+    layout();
+    reset();
+    $('replay').hidden = false;
+    $('source').textContent = market.recorded || 'a recorded run';
+
+    function seek(to) {
+      reset();
+      next = 0;
+      clock = to;
+      while (next < events.length && events[next].t <= clock) { apply(events[next++], false); }
+      render();
+    }
+    function frame(now) {
+      if (playing && last !== null) {
+        clock = Math.min(end + 3, clock + (now - last) / 1000 * Number($('speed').value));
+        while (next < events.length && events[next].t <= clock) { apply(events[next++], true); }
+        state.t = Math.min(clock, end);
+        render();
+        $('seek').value = end ? Math.round(1000 * Math.min(clock, end) / end) : 0;
+        if (clock >= end + 3) { playing = false; $('play').textContent = 'Again'; }
+      }
+      $('clock').textContent = Math.min(clock, end).toFixed(1) + ' / ' + end.toFixed(1) + ' s';
+      last = now;
+      requestAnimationFrame(frame);
+    }
+    $('play').addEventListener('click', function () {
+      if (clock >= end + 3) { seek(0); playing = true; } else { playing = !playing; }
+      $('play').textContent = playing ? 'Pause' : 'Play';
+    });
+    $('seek').addEventListener('input', function () { seek(end * Number($('seek').value) / 1000); });
+    requestAnimationFrame(frame);
+  }
+
+  if (window.RUN && window.RUN.market) {
+    replay(window.RUN);
+  } else if (location.protocol === 'file:') {
+    var note = document.createElement('p');
+    note.id = 'empty';
+    note.innerHTML = 'No recording beside this page. Run <code>cargo run --release -- sim --agents 100 --web</code> and open the address it prints, or record one with <code>--record docs/watch/run.js</code>.';
+    document.querySelector('main').replaceWith(note);
+  } else {
+    live();
+  }
+})();
+</script>
+</body>
+</html>

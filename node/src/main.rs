@@ -12,10 +12,12 @@ mod sim;
 mod tests;
 mod tui;
 mod verify;
+mod web;
 mod withdraw;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use chain::{Devnet, Verifier};
@@ -44,6 +46,16 @@ enum Run {
         /// Which plan of wants, bootstraps and quits to run with `--agents`.
         #[arg(long, requires = "agents", default_value_t = 1)]
         seed: u64,
+        /// Draw the run with `--agents` on a page on localhost, as it happens. The market waits a
+        /// few seconds for the page to be opened, and the page stays up while it is open.
+        #[arg(long, requires = "agents")]
+        web: bool,
+        /// Where `--web` serves the page.
+        #[arg(long, requires = "web", default_value_t = web::PORT)]
+        port: u16,
+        /// Write the run with `--agents` where the page reads a recording, e.g. docs/watch/run.js.
+        #[arg(long, requires = "agents")]
+        record: Option<PathBuf>,
     },
     /// Runs one agent.
     Node {
@@ -124,10 +136,42 @@ async fn main() -> ExitCode {
     }
 }
 
+/// The simulation with many agents, drawn on a page or recorded for one if asked.
+async fn watched(n: usize, seed: u64, port: Option<u16>, record: Option<PathBuf>) -> Result<()> {
+    let board = match port {
+        Some(port) => {
+            let (board, url) = web::Board::open(port).await?;
+            println!("Watch it at {url} . The market starts when the page opens, or in 15 seconds.\n");
+            board.wait_for_viewer(Duration::from_secs(15)).await;
+            Some(board)
+        }
+        None => record.is_some().then(web::Board::default),
+    };
+    let outcome = crowd::run(n, seed, board.as_ref()).await;
+    if let (Some(board), Some(path)) = (&board, &record) {
+        board.record(path)?;
+        println!("Recorded to {}; the page beside it plays it back.", path.display());
+    }
+    // The end of a run is the part worth looking at. Nobody looking, it ends here.
+    if let (Some(board), Some(_)) = (&board, port) {
+        if board.watched() {
+            println!("The page stays up while it is open. Ctrl-C ends it.");
+        }
+        board.linger(Duration::from_secs(600)).await;
+    }
+    outcome
+}
+
 async fn run(command: Run) -> Result<()> {
     match command {
         Run::Sim { agents: None, .. } => sim::run().await,
-        Run::Sim { agents: Some(n), seed } => crowd::run(n, seed).await,
+        Run::Sim {
+            agents: Some(n),
+            seed,
+            web,
+            port,
+            record,
+        } => watched(n, seed, web.then_some(port), record).await,
         Run::Node { config: path, plain } => {
             let config = NodeConfig::load(&path)?;
             let tokens = config.tokens();

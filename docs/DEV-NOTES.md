@@ -202,6 +202,24 @@ Each passed every check, on four to five cores. With eight busy processes compet
 ten cores, seed 1 settled 81 rings, the last 226 seconds after the last agent started, and passed
 every check. What the reviews found and nothing was done about is under the known gaps.
 
+## The run on a page, 14 November 2026
+
+`sim --agents N --web` serves `docs/watch/index.html` on localhost and tells it the run as a list
+of events that only grows: who is in the market, each ring as it settles, each agent that quits,
+each transaction the verifier refuses, a letter per agent for how it stands, and the checks at the
+end. The page asks for the events past the ones it has, a few times a second. `--record` writes
+the same list as `run.js`, and the same page beside that file plays it back with no server, so it
+opens from disk or from any static host.
+
+The market waits up to 15 seconds for the page to be opened before the agents start, and the
+page is served after the run for as long as it is open. With nobody watching neither wait
+happens, so a run started by a script ends when the market does.
+
+What was checked: the page in a browser, served live through a run of a hundred agents and
+playing back the recording that run made, with nothing in the browser's console in either; and
+one test that the events of a thirty-agent run name real agents and end with the result. Nothing
+checks what the page draws against the events it is given.
+
 ## Decisions
 
 - **Rust workspace, five crates.** `intents` is pure and has no async, so the rules can be tested

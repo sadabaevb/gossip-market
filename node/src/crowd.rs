@@ -21,12 +21,14 @@ use anyhow::{bail, ensure, Context, Result};
 use chain::Verifier;
 use intents::{fee_ceil, net_of_fee, AccountId, Ledger, TokenId};
 use market::{find_rings, Want};
+use serde_json::json;
 use tokio::time::{sleep, timeout};
 
 use crate::config::{devnet_key, NodeConfig, Timings, TokenConfig, Tokens, WantConfig};
 use crate::node::{self, Command, Handle};
 use crate::sim::{self, FEE_PIPS, VERIFIER};
 use crate::verify::{self, Checked};
+use crate::web::Board;
 
 /// How long the market has to clear once every agent is up. Several times what it takes with the
 /// processor to itself, about a minute for a hundred agents on four or five cores: the run is
@@ -296,6 +298,35 @@ struct Agent {
     read: u64,
 }
 
+impl Agent {
+    /// How the page draws the agent: gone, with a want signed into a ring, with one still open,
+    /// or with nothing left to trade.
+    fn letter(&self) -> char {
+        if self.gone.is_some() {
+            return 'x';
+        }
+        let view = self.handle.view.borrow();
+        if view.wants.iter().any(|want| want.locked.is_some()) {
+            'L'
+        } else if view
+            .wants
+            .iter()
+            .any(|want| want.closed.is_none() && want.remaining > 0)
+        {
+            'o'
+        } else {
+            '.'
+        }
+    }
+}
+
+/// The contract's own words out of a failed transaction's status, which wraps them in JSON.
+fn reason_of(failure: &str) -> &str {
+    failure
+        .split_once("panicked: ")
+        .map_or(failure, |(_, rest)| rest.split('"').next().unwrap_or(rest))
+}
+
 /// What the agents' logs say happened. Read for the summary; nothing passes or fails on it.
 #[derive(Default)]
 struct Tally {
@@ -434,7 +465,9 @@ fn every_planted_ring_closes(plans: &[Plan], planted: &Planted, account: impl Fn
     Ok(())
 }
 
-pub async fn run(n: usize, seed: u64) -> Result<()> {
+/// Runs the market. With a `board`, what happens is also told to it as it happens, for the page
+/// that draws the run and for a recording of it.
+pub async fn run(n: usize, seed: u64, board: Option<&Board>) -> Result<()> {
     ensure!((10..=500).contains(&n), "--agents takes from 10 to 500 agents, not {n}");
     let tokens = Tokens::from(token_table());
     let mut rng = Rng(seed);
@@ -443,6 +476,31 @@ pub async fn run(n: usize, seed: u64) -> Result<()> {
     let account = |i: usize| devnet_key(&name(i)).account_id();
     every_planted_ring_closes(&plans, &planted, account)?;
 
+    if let Some(board) = board {
+        let symbol = |token: usize| TOKENS[token].0;
+        let agents: Vec<_> = plans
+            .iter()
+            .enumerate()
+            .map(|(i, plan)| {
+                let wants: Vec<_> = plan
+                    .wants
+                    .iter()
+                    .map(|&(give, _, take, _)| json!({ "give": symbol(give), "take": symbol(take) }))
+                    .collect();
+                json!({ "name": name(i), "wants": wants })
+            })
+            .collect();
+        board.set_market(json!({
+            "about": format!(
+                "{n} agents on one machine, no server between them. Each dot is a node with its own key. A line \
+                 is a ring of two to four of them, settled in one transaction under the rules of the NEAR \
+                 Intents verifier."
+            ),
+            "recorded": format!("a recorded run: {n} agents, seed {seed}"),
+            "tokens": TOKENS.map(|token| token.0),
+            "agents": agents,
+        }));
+    }
     println!("== Gossip Market: {n} agents (seed {seed}) ==");
     println!(
         "A local verifier and {n} agents on libp2p over localhost, trading {}.",
@@ -517,6 +575,13 @@ pub async fn run(n: usize, seed: u64) -> Result<()> {
             .cloned()
             .unwrap_or_else(|| node::short(account).to_owned())
     };
+    let index: HashMap<AccountId, usize> = agents
+        .iter()
+        .enumerate()
+        .map(|(i, agent)| (agent.account.clone(), i))
+        .collect();
+    // What the page last drew of each agent, a letter each, sent again only when it changes.
+    let mut drawn = String::new();
     let mut tally = Tally::default();
     let mut settled: Vec<Settled> = Vec::new();
     let mut refused: Vec<(String, String)> = Vec::new();
@@ -550,6 +615,9 @@ pub async fn run(n: usize, seed: u64) -> Result<()> {
             if let Some(why) = why {
                 agent.handle.commands.send(Command::Quit).await.ok();
                 println!("[{:6.1}s] {} quits {why}", now.as_secs_f64(), agent.name);
+                if let Some(board) = board {
+                    board.push(now.saturating_sub(up), "quit", json!({ "a": i, "why": why }));
+                }
                 agent.gone = Some((now, why));
             }
         }
@@ -576,6 +644,13 @@ pub async fn run(n: usize, seed: u64) -> Result<()> {
             }
         }
         let cleared = quits_done && locked == 0 && find_rings(&open, FEE_PIPS).is_empty();
+        if let Some(board) = board {
+            let letters: String = agents.iter().map(Agent::letter).collect();
+            if letters != drawn {
+                board.push(now.saturating_sub(up), "pulse", json!({ "s": letters }));
+                drawn = letters;
+            }
+        }
 
         // The transactions are read after the agents, not before. A maker unlocks its want only
         // once its ring's transaction is on the devnet, so whatever let the market clear above is
@@ -592,6 +667,14 @@ pub async fn run(n: usize, seed: u64) -> Result<()> {
                     node::short(&sent.hash),
                     who(&sent.signer)
                 );
+                if let Some(board) = board {
+                    let who = index.get(&sent.signer).copied().unwrap_or(usize::MAX);
+                    board.push(
+                        now.saturating_sub(up),
+                        "refused",
+                        json!({ "a": who, "why": reason_of(&failure) }),
+                    );
+                }
                 refused.push((sent.hash, failure));
                 continue;
             }
@@ -606,6 +689,27 @@ pub async fn run(n: usize, seed: u64) -> Result<()> {
                 })
                 .collect();
             let ring_id = ring_id_of(&checked);
+            if let Some(board) = board {
+                // In the bundle's order, in which each maker gives to the next.
+                let makers: Vec<usize> = checked
+                    .legs
+                    .iter()
+                    .map(|(signer, _)| index.get(signer).copied().unwrap_or(usize::MAX))
+                    .collect();
+                let gives: Vec<String> = checked
+                    .legs
+                    .iter()
+                    .map(|(_, diff)| {
+                        let given = diff.diff.iter().find(|(_, delta)| **delta < 0);
+                        given.map_or(String::new(), |(token, d)| tokens.show(token, d.unsigned_abs()))
+                    })
+                    .collect();
+                board.push(
+                    now.saturating_sub(up),
+                    "ring",
+                    json!({ "makers": makers, "gives": gives, "tx": node::short(&sent.hash), "id": ring_id }),
+                );
+            }
             println!(
                 "[{:6.1}s] settled #{:<3} ring {ring_id} of {}: {}  (tx {}… sent by {})",
                 now.as_secs_f64(),
@@ -624,6 +728,9 @@ pub async fn run(n: usize, seed: u64) -> Result<()> {
 
         if cleared {
             cleared_at = Some(now);
+            if let Some(board) = board {
+                board.push(now.saturating_sub(up), "cleared", json!({}));
+            }
             break;
         }
         left = (open, locked);
@@ -765,6 +872,14 @@ pub async fn run(n: usize, seed: u64) -> Result<()> {
             })
             .collect();
         summary();
+        if let Some(board) = board {
+            let text = format!("the market did not clear within {} s", LIMIT.as_secs());
+            board.push(
+                started.elapsed().saturating_sub(up),
+                "done",
+                json!({ "ok": false, "text": text }),
+            );
+        }
         bail!(
             "the market did not clear within {}s: {} rings settled, {locked} live wants are locked, and these rings \
              are still open among the live agents' wants: {}",
@@ -774,6 +889,13 @@ pub async fn run(n: usize, seed: u64) -> Result<()> {
         );
     };
 
+    // A check that passed is said on the terminal and to the page alike.
+    let ok = |text: String| {
+        println!("  ok  {text}");
+        if let Some(board) = board {
+            board.push(cleared_at.saturating_sub(up), "check", json!({ "text": text }));
+        }
+    };
     // The summary follows whatever the checks find, so that a failed check comes with it.
     let checked = (|| -> Result<()> {
         println!("\n-- Checks --");
@@ -781,12 +903,12 @@ pub async fn run(n: usize, seed: u64) -> Result<()> {
             !settled.is_empty(),
             "the market cleared with nothing settled, though every planted ring closes"
         );
-        println!(
-            "  ok  the market cleared at {:.1}s: no ring is left among the {} live agents' open wants, \
+        ok(format!(
+            "the market cleared at {:.1}s: no ring is left among the {} live agents' open wants, \
              and none is locked",
             cleared_at.as_secs_f64(),
             live.len()
-        );
+        ));
 
         // Every transaction was read back from the devnet and checked from scratch above, the last
         // of them after the market was seen to clear. One that arrives after that still fails the
@@ -800,11 +922,11 @@ pub async fn run(n: usize, seed: u64) -> Result<()> {
         }
         let ids: BTreeSet<&String> = settled.iter().map(|s| &s.ring_id).collect();
         ensure!(ids.len() == settled.len(), "a ring settled in two transactions");
-        println!(
-            "  ok  {} transactions read back from the verifier: every signature valid, \
+        ok(format!(
+            "{} transactions read back from the verifier: every signature valid, \
              every one nets to zero after the fee",
             settled.len()
-        );
+        ));
 
         // The balances the transactions add up to, against the verifier's.
         let ledger = devnet.ledger();
@@ -853,7 +975,7 @@ pub async fn run(n: usize, seed: u64) -> Result<()> {
                 + fee;
             ensure!(deposited == now, "{token}: {deposited} deposited, {now} there now");
         }
-        println!("  ok  every balance is what the transactions say; every token adds up to what was deposited");
+        ok("every balance is what the transactions say; every token adds up to what was deposited".into());
 
         let by_id: HashMap<&String, &Settled> = settled.iter().map(|s| (&s.ring_id, s)).collect();
         for &i in &live {
@@ -883,10 +1005,9 @@ pub async fn run(n: usize, seed: u64) -> Result<()> {
                 );
             }
         }
-        println!(
-            "  ok  every live maker of a settled ring saw its own leg settle, \
-             and none thinks a ring settled that did not"
-        );
+        ok("every live maker of a settled ring saw its own leg settle, \
+            and none thinks a ring settled that did not"
+            .into());
 
         let held_live: Vec<&(usize, String)> = held.iter().filter(|(i, _)| agents[*i].gone.is_none()).collect();
         // A bundle whose transaction the verifier refused rightly never settles: on a machine
@@ -919,15 +1040,23 @@ pub async fn run(n: usize, seed: u64) -> Result<()> {
         }
         let held_rings: BTreeSet<&String> = held_live.iter().map(|(_, ring)| ring).collect();
         let refused_held = held_rings.iter().filter(|ring| !by_id.contains_key(**ring)).count();
-        println!(
-            "  ok  of the {} rings a live maker held the complete bundle for, {} settled and the verifier refused \
+        ok(format!(
+            "of the {} rings a live maker held the complete bundle for, {} settled and the verifier refused \
              the transaction of {refused_held}",
             held_rings.len(),
             held_rings.len() - refused_held
-        );
+        ));
         Ok(())
     })();
     summary();
+    let at = cleared_at.saturating_sub(up);
+    if let (Some(board), Err(failed)) = (board, &checked) {
+        board.push(
+            at,
+            "done",
+            json!({ "ok": false, "text": format!("a check failed: {failed}") }),
+        );
+    }
     checked?;
 
     for agent in &agents {
@@ -936,10 +1065,14 @@ pub async fn run(n: usize, seed: u64) -> Result<()> {
     for agent in agents {
         let _ = timeout(Duration::from_secs(5), agent.handle.task).await;
     }
-    println!(
-        "\nSIMULATION PASSED: {} rings settled among {n} agents, and the market cleared.",
+    let passed = format!(
+        "SIMULATION PASSED: {} rings settled among {n} agents, and the market cleared.",
         settled.len()
     );
+    if let Some(board) = board {
+        board.push(at, "done", json!({ "ok": true, "text": passed }));
+    }
+    println!("\n{passed}");
     Ok(())
 }
 

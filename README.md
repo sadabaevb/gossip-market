@@ -31,7 +31,7 @@ each one does. You should see, in order:
 Then the tests:
 
 ```sh
-cargo test                  # 76 tests, under half a minute after the first build
+cargo test                  # 77 tests, under half a minute after the first build
 cargo test -p conformance   # 7 tests against the verifier's own engine; fetches near/intents, takes a few minutes the first time
 ```
 
@@ -52,11 +52,30 @@ went out to a live maker settled or had its transaction refused by the verifier.
 another market.
 
 On 14 November 2026, on an Apple M2 Pro doing other work at the time, seeds 1 to 5 each passed:
-62 to 79 rings settled, the last of them 48 to 73 seconds after the last agent started. The run
+62 to 79 rings settled, the last of them 48 to 73 seconds after the last agent started. Of the
+357 rings in those five runs, 70 had three or four makers: one trade in five that no pair of
+agents could have made. The run
 keeps four to five cores busy; with fewer it takes longer, and the market has ten minutes to
 clear. `sim --agents 30` is a smaller market of the same kind: two runs took 3 and 13 seconds.
 Run one at a time; two at once run out of local ports. `docs/DEV-NOTES.md` has the numbers, the
 earlier runs on an Apple M4 Max, and what the runs found and fixed.
+
+### Watch it
+
+```sh
+cargo run --release -- sim --agents 100 --web
+```
+
+It prints an address on localhost and waits a few seconds for you to open it. The page shows the
+hundred agents as dots in a circle. Each ring is drawn between its makers as it settles: blue for
+two makers, gold for three, pink for four. Beside them it counts the rings, the share of them that
+no pair of agents could have settled, the agents that quit, and at the end the checks of the run.
+You should see a few dots turn to dashed grey in the first seconds, lines accumulate for a minute
+or so, and `SIMULATION PASSED` in green. The page stays up while it is open.
+
+Without building anything, open `docs/watch/index.html` in a browser: it plays back a run of a
+hundred agents recorded on 14 November 2026, 74 rings, 19 of them of three makers.
+`--record docs/watch/run.js` records another.
 
 ### On screen, as separate processes
 
@@ -162,7 +181,7 @@ verifier and the payer of gas. There is nothing to register anywhere.
 | `intents` | What the verifier reads: NEP-413 signed `token_diff` and `ft_withdraw` intents, nonces, the fee rounding, and the verifier's rules over balances in memory |
 | `chain` | The NEAR JSON-RPC calls a node makes, transaction encoding, and a local devnet that answers the same calls |
 | `market` | Signed wants, the book, and the ring search and sizing |
-| `node` | The `gossipmarket` binary: the agent, its screen, the simulation, `preflight`, `verify` and `withdraw` |
+| `node` | The `gossipmarket` binary: the agent, its screen, the simulation and the page that draws it, `preflight`, `verify` and `withdraw` |
 | `conformance` | Runs the bundles this code signs through the verifier's own engine (`defuse-core`, pinned) and compares answers with ours, word for word |
 
 ## What was checked, and how

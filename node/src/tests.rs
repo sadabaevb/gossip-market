@@ -444,9 +444,47 @@ async fn the_preflight_gets_the_answers_it_expects() {
 // and before nodes proposed only the rings that come first for their wants, a market this size
 // went round one ring of four until the end; with either, it clears. What needs each of them, and
 // waiting out tries a node was asked into, is a hundred: `gossipmarket sim --agents 100`.
+//
+// The run is told to a board as it goes, as with `--web` and `--record`. The page draws only what
+// it is told: a ring between the wrong agents, or no word that the run ended, and what is on
+// screen is not the market that settled.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_crowded_market_clears() {
-    crate::crowd::run(30, 1).await.unwrap();
+    let board = crate::web::Board::default();
+    crate::crowd::run(30, 1, Some(&board)).await.unwrap();
+
+    let run = board.recording();
+    assert_eq!(run["market"]["agents"].as_array().unwrap().len(), 30);
+    let events = run["events"].as_array().unwrap();
+    let of = |kind: &'static str| events.iter().filter(move |event| event["k"] == kind);
+    assert!(of("ring").count() > 0);
+    for ring in of("ring") {
+        let makers: Vec<u64> = ring["makers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|m| m.as_u64())
+            .collect();
+        assert!(
+            (2..=4).contains(&makers.len()) && makers.iter().all(|&maker| maker < 30),
+            "{ring}"
+        );
+        assert_eq!(ring["gives"].as_array().unwrap().len(), makers.len(), "{ring}");
+    }
+    assert!(of("pulse").all(|pulse| pulse["s"].as_str().unwrap().len() == 30));
+    // An agent set to quit in the middle of a ring quits only if it gets into one, so how many
+    // quit is the run's to say; the page must be told of each that did.
+    let gone = of("pulse")
+        .next_back()
+        .map_or(0, |pulse| pulse["s"].as_str().unwrap().matches('x').count());
+    assert_eq!(of("quit").count(), gone);
+    assert_eq!(of("check").count(), 5);
+    let last = events.last().unwrap();
+    assert_eq!(
+        (&last["k"], &last["ok"]),
+        (&serde_json::json!("done"), &serde_json::json!(true)),
+        "{last}"
+    );
 }
 
 // Only a ring's makers propose it. If a stranger's proposal were taken up, anyone who hears the

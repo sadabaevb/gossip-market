@@ -1942,6 +1942,7 @@ name = "gossipmarket"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "axum",
  "chain",
  "chrono",
  "clap",
