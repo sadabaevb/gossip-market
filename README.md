@@ -107,9 +107,8 @@ input and output: read the book, place and cancel a want, wait for a settlement,
 the verifier. The agent decides what to want; the node finds the ring and settles it. With no
 config it is a rehearsal like `sim`, with nothing to set up: a local verifier, and Bob and Carol
 with wants that no two of the three can trade on. The agent is Alice, holds 50 USDC and has no
-wants yet. Ask it to buy compute credits. Opened in this directory, Claude Code offers the same
-server from `.mcp.json`; any other client starts `gossipmarket mcp` the way it starts any stdio
-server.
+wants yet. Ask it to buy compute credits. Any other client starts `gossipmarket mcp` the way it
+starts any stdio server.
 
 By hand, without an agent:
 
@@ -127,9 +126,19 @@ with bob … and carol …: you gave 10 USDC and got 103.039 CREDITS`, and names
 
 `--config demo/mainnet/alice.toml` serves a real node instead of the rehearsal. Both generations
 of the protocol are answered: revision 2026-07-28 request by request, and the earlier ones after
-their `initialize`. What was run on 14 November 2026: the tools over standard input as above, and
-the replies checked against the protocol's published JSON schemas for 2026-07-28 and 2025-11-25.
-No AI client had been connected to it when this was written.
+their `initialize`.
+
+What was run on 14 November 2026: the tools over standard input as above; the replies checked
+against the protocol's published JSON schemas for 2026-07-28 and 2025-11-25; and one AI agent.
+Claude Code 2.1.325, connected with the command above, was asked in one sentence to look at the
+market, offer 10 USDC for at least 95 CREDITS, wait for the settlement and check it. It called the
+tools seven times over 36 seconds and reported the two open wants it found, that only a ring of
+three could fill its own, the ring that settled with what each maker gave and got (10 USDC for
+103.039 CREDITS on its side), and `VERIFIED`. Asked the same again ten minutes later, against the
+same running server, it called them nine times over 37 seconds, said unprompted that an identical
+want had already settled and that its new one was #2, and reported the second ring (10 USDC for
+103.029 CREDITS) and `VERIFIED`. The demo video shows that second session. No other client was
+tried.
 
 ### On screen, as separate processes
 
@@ -274,6 +283,13 @@ verifier and the payer of gas. There is nothing to register anywhere.
 
   Then `withdraw` took 0.05 USDC from one agent back out of the verifier to an ordinary account
   ([`C9ediagwiPguKwYjdKZAbFbaTdLzrjXV7v81voU4QTna`](https://nearblocks.io/txns/C9ediagwiPguKwYjdKZAbFbaTdLzrjXV7v81voU4QTna)).
+
+  On 14 November 2026 the same three agents, with the configs in `demo/mainnet/` as they are, did
+  it again for the demo video: the three nodes were started a second and a half apart, and all
+  three logged `SETTLED` 10 seconds after the first one started, 18 Tgas burnt
+  ([`GEeSFMnxE3bj86JXX9yMeyFTPV3FLhuZWnu9z4t45KVn`](https://pikespeak.ai/transaction-viewer/GEeSFMnxE3bj86JXX9yMeyFTPV3FLhuZWnu9z4t45KVn)).
+  `verify` on it ended with `VERIFIED` minutes later from the endpoint in the config; once that
+  node forgets the transaction, the command needs `--rpc` as above.
 
 ## What this does not claim
 

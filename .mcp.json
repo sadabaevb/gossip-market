@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "gossipmarket": {
-      "command": "cargo",
-      "args": ["run", "--release", "--quiet", "--", "mcp"]
-    }
-  }
-}

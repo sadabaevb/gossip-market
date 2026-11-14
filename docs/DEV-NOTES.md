@@ -219,9 +219,23 @@ and 2025-11-25. Driving the binary by hand found what the tests had not: a tool 
 moment of starting was told the node held nothing, because the node had not read the verifier
 yet. The first tool call now waits for that, and in a rehearsal for the others' wants to arrive.
 
-What was not: no AI client had been connected to it. Requests are answered one at a time, so a
-`wait_for_settlement` holds up whatever the client asks meanwhile, for at most a minute, and a
-`notifications/cancelled` does not cut it short.
+Later the same day an AI agent was given the tools. Claude Code, with the server added by
+`claude mcp add gossipmarket -- <the release binary> mcp`, listed it as connected, and asked in
+one sentence (in Russian) to look at the market, offer 10 USDC for at least 95 CREDITS, wait for
+the settlement and check it, called the tools seven times in 36 seconds. Its report had the
+market as it found it, the reason its want needed a ring of three, the ring `f4f5ff5acf5df14c`
+with each maker's two amounts, the verdict `VERIFIED`, and what it and the others were left
+holding. Asked again ten minutes later in English, with the server still running, it made nine
+calls in 37 seconds and said before anything else that the node was not fresh: an identical want
+had settled at 18:35, so the one it placed was #2 and the balances showed both trades. That
+session was recorded and is in the demo video. The client was Claude Code 2.1.325. Which revision
+of the protocol it spoke was not looked at, and no other client was tried. Adding the server by hand in this repository made Claude Code warn that `gossipmarket` is
+defined in two scopes with different commands, since a `.mcp.json` here named it too. That file
+is gone: one way to connect is enough, and its `cargo run` would have compiled for minutes the
+first time a client started it.
+
+Requests are answered one at a time, so a `wait_for_settlement` holds up whatever the client asks
+meanwhile, for at most a minute, and a `notifications/cancelled` does not cut it short.
 
 ## The run on a page, 14 November 2026
 
@@ -255,6 +269,21 @@ So `verify` takes `--rpc` to ask another endpoint than the config's, and when th
 answer it says that the transaction may only be old and names an archival node. The configs keep
 the ordinary endpoint: a node reads the present, not the past. The same day `preflight` was run
 again against `intents.near` and passed all five probes.
+
+## The ring on mainnet again, 14 November 2026
+
+For the demo video the three mainnet agents were run once more, by a script that starts
+`gossipmarket node --plain` for each, a second and a half apart, and keeps every line with the
+time it came. Carol, the lowest account and so the first to propose, saw the third want 4.3
+seconds after the first node started, proposed at 4.4, had both other legs signed in the same
+tenth of a second, sent the transaction at 5.0 and logged `SETTLED` at 9.4; the others followed
+within half a second. The transaction is `GEeSFMnxE3bj86JXX9yMeyFTPV3FLhuZWnu9z4t45KVn`, 18 Tgas
+burnt, 0.00112 NEAR off the submitter's balance.
+
+Before it: `preflight` passed, and each agent's holdings inside the verifier were read with
+`account`. After it: `verify` ended with `VERIFIED`, and the holdings had moved by what the three
+legs say. Only Carol held the 0.31 NEAR a submitter needs; the other two could not have sent it
+had she not.
 
 ## A seat for a person, 14 November 2026
 
